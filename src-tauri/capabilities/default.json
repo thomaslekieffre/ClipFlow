@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicep/tauri-settings-schema/v2/schemas/capability.schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for ClipFlow",
+  "windows": ["main", "overlay"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:default",
+    "core:webview:default",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-is-registered",
+    "shell:allow-execute",
+    "shell:allow-spawn",
+    "notification:default"
+  ]
+}

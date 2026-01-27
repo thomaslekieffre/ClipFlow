@@ -1,0 +1,46 @@
+@import "tailwindcss";
+
+/* Enable class-based dark mode for Tailwind v4 */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Fade-in animation for banners */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.2s ease-out;
+}
+
+/* Custom scrollbar for timeline */
+.timeline-scroll::-webkit-scrollbar {
+  height: 6px;
+}
+
+.timeline-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.timeline-scroll::-webkit-scrollbar-thumb {
+  background: #d4d4d8;
+  border-radius: 3px;
+}
+
+.dark .timeline-scroll::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+}
+
+.timeline-scroll::-webkit-scrollbar-thumb:hover {
+  background: #a1a1aa;
+}
+
+.dark .timeline-scroll::-webkit-scrollbar-thumb:hover {
+  background: #52525b;
+}

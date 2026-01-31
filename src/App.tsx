@@ -99,7 +99,7 @@ function App() {
     if (recordingState === "recording") {
       timerRef.current = setInterval(() => {
         updateDuration();
-      }, 100);
+      }, 200);
     } else {
       if (timerRef.current) {
         clearInterval(timerRef.current);

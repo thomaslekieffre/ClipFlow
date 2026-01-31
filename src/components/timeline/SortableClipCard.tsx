@@ -33,10 +33,15 @@ export function SortableClipCard({ clip, index, onDelete }: Props) {
   };
 
   useEffect(() => {
+    let mounted = true;
     getThumbnailBase64(clip.id).then((src) => {
+      if (!mounted) return;
       if (src) setThumbSrc(src);
       else setThumbFailed(true);
-    }).catch(() => setThumbFailed(true));
+    }).catch(() => {
+      if (mounted) setThumbFailed(true);
+    });
+    return () => { mounted = false; };
   }, [clip.id]);
 
   useEffect(() => {

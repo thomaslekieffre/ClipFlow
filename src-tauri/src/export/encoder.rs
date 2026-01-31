@@ -36,9 +36,17 @@ fn xfade_name(t: &TransitionType) -> &'static str {
     }
 }
 
+fn ffprobe_path() -> PathBuf {
+    let name = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
+    ffmpeg_path().with_file_name(name)
+}
+
 /// Probe video duration in seconds using ffprobe
 async fn probe_duration(path: &PathBuf) -> Result<f64> {
-    let ffprobe = ffmpeg_path().with_file_name("ffprobe.exe");
+    if !path.exists() {
+        anyhow::bail!("Clip file not found: {:?}", path);
+    }
+    let ffprobe = ffprobe_path();
     let output = Command::new(&ffprobe)
         .args([
             "-v", "error",
@@ -66,6 +74,13 @@ pub async fn export_mp4(
 ) -> Result<()> {
     if clips.is_empty() {
         anyhow::bail!("No clips to export");
+    }
+
+    // Validate all clip files exist
+    for (i, clip) in clips.iter().enumerate() {
+        if !clip.path.exists() {
+            anyhow::bail!("Clip {} file not found: {:?}", i + 1, clip.path);
+        }
     }
 
     // Single clip: just copy

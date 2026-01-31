@@ -20,7 +20,10 @@ pub fn handler(app: &tauri::AppHandle, shortcut: &Shortcut, event: tauri_plugin_
 fn handle_f9(app: &tauri::AppHandle) {
     let state = app.state::<Mutex<AppState>>();
     let current_state = {
-        let s = state.lock().unwrap();
+        let Ok(s) = state.lock() else {
+            eprintln!("[hotkey] Failed to lock state");
+            return;
+        };
         s.recording_state
     };
 
@@ -56,7 +59,10 @@ fn handle_f9(app: &tauri::AppHandle) {
 fn handle_escape(app: &tauri::AppHandle) {
     let state = app.state::<Mutex<AppState>>();
     let current_state = {
-        let s = state.lock().unwrap();
+        let Ok(s) = state.lock() else {
+            eprintln!("[hotkey] Failed to lock state");
+            return;
+        };
         s.recording_state
     };
 

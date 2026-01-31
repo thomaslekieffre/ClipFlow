@@ -17,19 +17,50 @@ pub fn run() {
         .setup(|app| {
             // Set window icon (needed during dev mode)
             let png_bytes = include_bytes!("../icons/icon.png");
-            let img = image::load_from_memory(png_bytes).expect("Failed to decode icon");
-            let rgba = img.to_rgba8();
-            let (w, h) = rgba.dimensions();
-            let icon = tauri::image::Image::new_owned(rgba.into_raw(), w, h);
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.set_icon(icon);
+            if let Ok(img) = image::load_from_memory(png_bytes) {
+                let rgba = img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                let icon = tauri::image::Image::new_owned(rgba.into_raw(), w, h);
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.set_icon(icon);
+                }
             }
+
+            // Cleanup old temp files on startup (> 24h)
+            let temp_dir = dirs::data_local_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join("ClipFlow")
+                .join("temp");
+            if temp_dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(&temp_dir) {
+                    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(24 * 3600);
+                    for entry in entries.flatten() {
+                        if let Ok(meta) = entry.metadata() {
+                            if let Ok(modified) = meta.modified() {
+                                if modified < cutoff {
+                                    let _ = std::fs::remove_file(entry.path());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Cleanup preview temp files
+            let preview_dir = std::env::temp_dir().join("clipflow_preview");
+            if preview_dir.exists() {
+                let _ = std::fs::remove_dir_all(&preview_dir);
+            }
+
             Ok(())
         })
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_shortcuts(["F9", "Escape"])
-                .expect("Failed to register shortcuts")
+                .unwrap_or_else(|e| {
+                    eprintln!("[init] Failed to register shortcuts: {}", e);
+                    tauri_plugin_global_shortcut::Builder::new()
+                })
                 .with_handler(hotkeys::handler)
                 .build(),
         )

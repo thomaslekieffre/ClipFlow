@@ -54,6 +54,15 @@ pub fn reorder_clips(
 #[tauri::command]
 pub fn delete_clip(state: State<'_, Mutex<AppState>>, clip_id: String) -> Result<(), String> {
     let mut state = state.lock().map_err(|e| e.to_string())?;
+
+    // Delete clip files from disk
+    if let Some(clip) = state.clips.iter().find(|c| c.id == clip_id) {
+        let _ = std::fs::remove_file(&clip.path);
+        if let Some(ref thumb) = clip.thumbnail_path {
+            let _ = std::fs::remove_file(thumb);
+        }
+    }
+
     state.clips.retain(|c| c.id != clip_id);
     let max_transitions = state.clips.len().saturating_sub(1);
     state.transitions.truncate(max_transitions);

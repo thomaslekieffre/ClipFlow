@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 
 interface Props {
@@ -11,6 +11,15 @@ export function VideoPreview({ filePath, onClose }: Props) {
   const [error, setError] = useState(false);
 
   const videoSrc = convertFileSrc(filePath);
+
+  // Close on ESC
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [onClose]);
 
   const extractFilename = (path: string) => {
     const parts = path.replace(/\\/g, "/").split("/");

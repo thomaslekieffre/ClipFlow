@@ -42,18 +42,20 @@ pub async fn stop(state: &Mutex<AppState>) -> Result<Clip, String> {
             return Err("Not recording".into());
         }
 
+        // .take() ensures only the first caller gets the process — prevents double-stop
         let child = s.ffmpeg_process.take()
-            .ok_or("No FFmpeg process")?;
+            .ok_or("No FFmpeg process (already stopped?)")?;
         let start_time = s.recording_start.take()
             .ok_or("No recording start time")?;
         let clip_path = s.current_clip_path.take()
             .ok_or("No clip path")?;
+
+        // Mark idle immediately to prevent concurrent stop attempts
+        s.recording_state = RecordingState::Idle;
         let region = s.current_region.clone().unwrap_or(Region {
             x: 0, y: 0, width: 1920, height: 1080,
         });
         let has_audio = s.audio_enabled;
-
-        s.recording_state = RecordingState::Idle;
 
         (child, start_time, clip_path, region, has_audio)
     };

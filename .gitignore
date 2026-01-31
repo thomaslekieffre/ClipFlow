@@ -22,3 +22,10 @@ Thumbs.db
 # Misc
 *.bat
 src-tauri/gen/
+
+# Claude
+.claude/
+CLAUDE.md
+PLAN.md
+PROJET.md
+nul

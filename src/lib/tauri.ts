@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Clip,
+  ExportFormat,
+  ExportQuality,
   RecordingState,
   Region,
   Transition,
@@ -70,8 +72,12 @@ export async function getTransitions(): Promise<Transition[]> {
   return invoke("get_transitions");
 }
 
-export async function exportVideo(watermark: boolean): Promise<string> {
-  return invoke("export_video", { watermark });
+export async function exportVideo(watermark: boolean, format: ExportFormat, quality: ExportQuality): Promise<string> {
+  return invoke("export_video", { watermark, format, quality });
+}
+
+export async function setClipTrim(clipId: string, trimStartMs: number, trimEndMs: number): Promise<void> {
+  return invoke("set_clip_trim", { clipId, trimStartMs, trimEndMs });
 }
 
 export async function previewVideo(): Promise<string> {

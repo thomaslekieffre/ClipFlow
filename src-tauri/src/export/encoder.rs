@@ -1,4 +1,4 @@
-use crate::types::{Clip, Transition, TransitionType};
+use crate::types::{Clip, ExportQuality, Transition, TransitionType};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -64,6 +64,19 @@ async fn probe_duration(path: &PathBuf) -> Result<f64> {
     s.trim().parse::<f64>().context("Failed to parse duration")
 }
 
+/// Get effective duration of a clip after trimming
+fn effective_duration(clip: &Clip, probed_duration: f64) -> f64 {
+    let start = clip.trim_start_ms as f64 / 1000.0;
+    let end = if clip.trim_end_ms > 0 {
+        clip.trim_end_ms as f64 / 1000.0
+    } else {
+        probed_duration
+    };
+    (end - start).max(0.1)
+}
+
+const WATERMARK_FILTER: &str = "drawtext=text='ClipFlow':fontsize=28:fontcolor=white@0.7:shadowcolor=black@0.5:shadowx=2:shadowy=2:x=w-tw-20:y=h-th-16";
+
 /// Build and run the FFmpeg export command with xfade transitions
 pub async fn export_mp4(
     clips: &[Clip],
@@ -71,48 +84,44 @@ pub async fn export_mp4(
     output_path: &PathBuf,
     app: &AppHandle,
     watermark: bool,
+    quality: &ExportQuality,
 ) -> Result<()> {
     if clips.is_empty() {
         anyhow::bail!("No clips to export");
     }
 
-    // Validate all clip files exist
     for (i, clip) in clips.iter().enumerate() {
         if !clip.path.exists() {
             anyhow::bail!("Clip {} file not found: {:?}", i + 1, clip.path);
         }
     }
 
-    // Single clip: just copy
     if clips.len() == 1 {
-        return export_single_clip(&clips[0], output_path, app, watermark).await;
+        return export_single_clip(&clips[0], output_path, app, watermark, quality).await;
     }
 
-    // Get durations for all clips
     let mut durations = Vec::new();
     for clip in clips {
         let d = probe_duration(&clip.path).await?;
         durations.push(d);
     }
 
-    // Find max resolution for scaling
+    let eff_durations: Vec<f64> = clips.iter().zip(durations.iter())
+        .map(|(c, d)| effective_duration(c, *d))
+        .collect();
+
     let max_w = clips.iter().map(|c| c.region.width).max().unwrap_or(1920);
     let max_h = clips.iter().map(|c| c.region.height).max().unwrap_or(1080);
-    // Ensure even dimensions
     let max_w = (max_w / 2) * 2;
     let max_h = (max_h / 2) * 2;
 
-    // Build FFmpeg args
     let mut args: Vec<String> = Vec::new();
-
-    // Input files
     for clip in clips {
         args.push("-i".into());
         args.push(clip.path.to_string_lossy().to_string());
     }
 
-    // Build filter_complex
-    let mut filter = build_filter_complex(clips.len(), &durations, transitions, max_w, max_h);
+    let mut filter = build_filter_complex_with_trim(clips, &eff_durations, transitions, max_w, max_h);
 
     let final_label = if clips.len() == 2 {
         "[v0]".to_string()
@@ -120,12 +129,10 @@ pub async fn export_mp4(
         format!("[v{}]", clips.len() - 2)
     };
 
-    // Add watermark drawtext to the final output
     if watermark {
         let wm_label = "[final]";
         filter.push_str(&format!(
-            ";{}drawtext=text='ClipFlow':fontsize=28:fontcolor=white@0.7:shadowcolor=black@0.5:shadowx=2:shadowy=2:x=w-tw-20:y=h-th-16{}",
-            final_label, wm_label
+            ";{}{}{}", final_label, WATERMARK_FILTER, wm_label
         ));
         args.push("-filter_complex".into());
         args.push(filter);
@@ -138,26 +145,23 @@ pub async fn export_mp4(
         args.push(final_label);
     }
 
-    // Output settings
+    let crf_str = quality.crf().to_string();
     args.extend([
         "-c:v", "libx264",
-        "-preset", "medium",
-        "-crf", "20",
+        "-preset", quality.preset(),
+        "-crf", &crf_str,
         "-pix_fmt", "yuv420p",
         "-r", "30",
-        "-an", // no audio for now
+        "-an",
         "-y",
     ].iter().map(|s| s.to_string()));
-
     args.push(output_path.to_string_lossy().to_string());
 
-    // Log the command for debugging
     let ffmpeg = ffmpeg_path();
     eprintln!("[export] FFmpeg path: {:?}", ffmpeg);
     eprintln!("[export] Output: {:?}", output_path);
     eprintln!("[export] Args: {:?}", args);
 
-    // Run FFmpeg with progress tracking
     let mut child = Command::new(&ffmpeg)
         .args(&args)
         .stdin(Stdio::null())
@@ -166,8 +170,7 @@ pub async fn export_mp4(
         .spawn()
         .context("Failed to start FFmpeg export")?;
 
-    // Parse stderr for progress
-    let total_duration: f64 = durations.iter().sum::<f64>()
+    let total_duration: f64 = eff_durations.iter().sum::<f64>()
         - (transitions.len() as f64 * TRANSITION_DURATION);
 
     let mut stderr_log = String::new();
@@ -196,32 +199,153 @@ pub async fn export_mp4(
     Ok(())
 }
 
+/// Export as GIF using palettegen/paletteuse for quality
+pub async fn export_gif(
+    clips: &[Clip],
+    transitions: &[Transition],
+    output_path: &PathBuf,
+    app: &AppHandle,
+    watermark: bool,
+    quality: &ExportQuality,
+) -> Result<()> {
+    if clips.is_empty() {
+        anyhow::bail!("No clips to export as GIF");
+    }
+
+    for (i, clip) in clips.iter().enumerate() {
+        if !clip.path.exists() {
+            anyhow::bail!("Clip {} file not found: {:?}", i + 1, clip.path);
+        }
+    }
+
+    let _ = app.emit("export-progress", 5u32);
+
+    // First, create an intermediate MP4 (fast, temp)
+    let temp_mp4 = output_path.with_extension("tmp.mp4");
+    let temp_quality = ExportQuality::Low; // fast intermediate
+
+    if clips.len() == 1 {
+        export_single_clip(&clips[0], &temp_mp4, app, watermark, &temp_quality).await?;
+    } else {
+        export_mp4(clips, transitions, &temp_mp4, app, watermark, &temp_quality).await?;
+    }
+
+    let _ = app.emit("export-progress", 50u32);
+
+    // GIF settings based on quality
+    let fps = match quality {
+        ExportQuality::High => 15,
+        ExportQuality::Medium => 12,
+        ExportQuality::Low => 8,
+    };
+    let max_width = match quality {
+        ExportQuality::High => 640,
+        ExportQuality::Medium => 480,
+        ExportQuality::Low => 320,
+    };
+
+    // Two-pass GIF: palettegen then paletteuse
+    let palette_path = output_path.with_extension("palette.png");
+    let ffmpeg = ffmpeg_path();
+
+    // Pass 1: Generate palette
+    let palette_filter = format!(
+        "fps={},scale={}:-1:flags=lanczos,palettegen=stats_mode=diff",
+        fps, max_width
+    );
+    let output = Command::new(&ffmpeg)
+        .args([
+            "-i", &temp_mp4.to_string_lossy(),
+            "-vf", &palette_filter,
+            "-y",
+            &palette_path.to_string_lossy(),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .context("Failed to generate GIF palette")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Palette generation failed: {}", stderr.chars().take(500).collect::<String>());
+    }
+
+    let _ = app.emit("export-progress", 75u32);
+
+    // Pass 2: Generate GIF with palette
+    let gif_filter = format!(
+        "fps={},scale={}:-1:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5",
+        fps, max_width
+    );
+    let output = Command::new(&ffmpeg)
+        .args([
+            "-i", &temp_mp4.to_string_lossy(),
+            "-i", &palette_path.to_string_lossy(),
+            "-filter_complex", &gif_filter,
+            "-y",
+            &output_path.to_string_lossy(),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .context("Failed to generate GIF")?;
+
+    // Cleanup temp files
+    let _ = std::fs::remove_file(&temp_mp4);
+    let _ = std::fs::remove_file(&palette_path);
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("GIF generation failed: {}", stderr.chars().take(500).collect::<String>());
+    }
+
+    eprintln!("[export] GIF export completed");
+    let _ = app.emit("export-progress", 100u32);
+    Ok(())
+}
+
 async fn export_single_clip(
     clip: &Clip,
     output_path: &PathBuf,
     app: &AppHandle,
     watermark: bool,
+    quality: &ExportQuality,
 ) -> Result<()> {
     let _ = app.emit("export-progress", 10u32);
 
     let ffmpeg = ffmpeg_path();
     eprintln!("[export] Single clip export: {:?} -> {:?}, watermark={}", clip.path, output_path, watermark);
 
-    let mut cmd_args: Vec<String> = vec![
-        "-i".into(), clip.path.to_string_lossy().to_string(),
-    ];
+    let mut cmd_args: Vec<String> = Vec::new();
 
-    if watermark {
-        cmd_args.extend([
-            "-vf".into(),
-            "drawtext=text='ClipFlow':fontsize=28:fontcolor=white@0.7:shadowcolor=black@0.5:shadowx=2:shadowy=2:x=w-tw-20:y=h-th-16".into(),
-        ]);
+    // Add trim as input seek if applicable
+    if clip.trim_start_ms > 0 {
+        cmd_args.push("-ss".into());
+        cmd_args.push(format!("{:.3}", clip.trim_start_ms as f64 / 1000.0));
     }
 
+    cmd_args.push("-i".into());
+    cmd_args.push(clip.path.to_string_lossy().to_string());
+
+    if clip.trim_end_ms > 0 {
+        cmd_args.push("-to".into());
+        let end = clip.trim_end_ms as f64 / 1000.0 - clip.trim_start_ms as f64 / 1000.0;
+        cmd_args.push(format!("{:.3}", end.max(0.1)));
+    }
+
+    if watermark {
+        cmd_args.extend(["-vf".into(), WATERMARK_FILTER.into()]);
+    }
+
+    let crf_str = quality.crf().to_string();
     cmd_args.extend([
         "-c:v", "libx264",
-        "-preset", "medium",
-        "-crf", "20",
+        "-preset", quality.preset(),
+        "-crf", &crf_str,
         "-pix_fmt", "yuv420p",
         "-r", "30",
         "-an",
@@ -249,20 +373,42 @@ async fn export_single_clip(
     Ok(())
 }
 
-fn build_filter_complex(
-    n: usize,
-    durations: &[f64],
+fn build_filter_complex_with_trim(
+    clips: &[Clip],
+    eff_durations: &[f64],
     transitions: &[Transition],
     max_w: u32,
     max_h: u32,
 ) -> String {
+    let n = clips.len();
     let mut filters = Vec::new();
 
-    // Scale all inputs to the same resolution
+    // Trim + scale all inputs
     for i in 0..n {
-        filters.push(format!(
-            "[{i}]scale={max_w}:{max_h}:force_original_aspect_ratio=decrease,pad={max_w}:{max_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[s{i}]"
-        ));
+        let clip = &clips[i];
+        let has_trim = clip.trim_start_ms > 0 || clip.trim_end_ms > 0;
+
+        if has_trim {
+            // Trim first, then scale
+            let start_s = clip.trim_start_ms as f64 / 1000.0;
+            let end_s = clip.trim_end_ms as f64 / 1000.0;
+
+            let trim_part = if clip.trim_start_ms > 0 && clip.trim_end_ms > 0 {
+                format!("trim=start={start_s:.3}:end={end_s:.3},setpts=PTS-STARTPTS,")
+            } else if clip.trim_start_ms > 0 {
+                format!("trim=start={start_s:.3},setpts=PTS-STARTPTS,")
+            } else {
+                format!("trim=end={end_s:.3},setpts=PTS-STARTPTS,")
+            };
+
+            filters.push(format!(
+                "[{i}]{trim_part}scale={max_w}:{max_h}:force_original_aspect_ratio=decrease,pad={max_w}:{max_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[s{i}]"
+            ));
+        } else {
+            filters.push(format!(
+                "[{i}]scale={max_w}:{max_h}:force_original_aspect_ratio=decrease,pad={max_w}:{max_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[s{i}]"
+            ));
+        }
     }
 
     // Chain xfade transitions
@@ -270,7 +416,7 @@ fn build_filter_complex(
     let mut cumulative_offset: f64 = 0.0;
 
     for i in 0..(n - 1) {
-        cumulative_offset += durations[i] - TRANSITION_DURATION;
+        cumulative_offset += eff_durations[i] - TRANSITION_DURATION;
 
         let transition_type = transitions
             .get(i)
@@ -312,9 +458,12 @@ pub async fn preview_mp4(
         durations.push(d);
     }
 
+    let eff_durations: Vec<f64> = clips.iter().zip(durations.iter())
+        .map(|(c, d)| effective_duration(c, *d))
+        .collect();
+
     let max_w = clips.iter().map(|c| c.region.width).max().unwrap_or(1920);
     let max_h = clips.iter().map(|c| c.region.height).max().unwrap_or(1080);
-    // Half resolution for preview, ensure even
     let prev_w = ((max_w / 2) / 2) * 2;
     let prev_h = ((max_h / 2) / 2) * 2;
     let prev_w = prev_w.max(320);
@@ -326,7 +475,7 @@ pub async fn preview_mp4(
         args.push(clip.path.to_string_lossy().to_string());
     }
 
-    let filter = build_filter_complex(clips.len(), &durations, transitions, prev_w, prev_h);
+    let filter = build_filter_complex_with_trim(clips, &eff_durations, transitions, prev_w, prev_h);
     args.push("-filter_complex".into());
     args.push(filter);
 
@@ -360,7 +509,7 @@ pub async fn preview_mp4(
         .spawn()
         .context("Failed to start FFmpeg preview")?;
 
-    let total_duration: f64 = durations.iter().sum::<f64>()
+    let total_duration: f64 = eff_durations.iter().sum::<f64>()
         - (transitions.len() as f64 * TRANSITION_DURATION);
 
     let mut stderr_log = String::new();
@@ -397,21 +546,38 @@ async fn preview_single_clip(
 
     let prev_w = ((clip.region.width / 2) / 2) * 2;
     let prev_h = ((clip.region.height / 2) / 2) * 2;
+
+    let mut cmd_args: Vec<String> = Vec::new();
+
+    if clip.trim_start_ms > 0 {
+        cmd_args.push("-ss".into());
+        cmd_args.push(format!("{:.3}", clip.trim_start_ms as f64 / 1000.0));
+    }
+
+    cmd_args.push("-i".into());
+    cmd_args.push(clip.path.to_string_lossy().to_string());
+
+    if clip.trim_end_ms > 0 {
+        cmd_args.push("-to".into());
+        let end = clip.trim_end_ms as f64 / 1000.0 - clip.trim_start_ms as f64 / 1000.0;
+        cmd_args.push(format!("{:.3}", end.max(0.1)));
+    }
+
     let scale = format!("scale={}:{}", prev_w.max(320), prev_h.max(240));
+    cmd_args.extend([
+        "-vf", &scale,
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "30",
+        "-pix_fmt", "yuv420p",
+        "-r", "24",
+        "-an",
+        "-y",
+    ].iter().map(|s| s.to_string()));
+    cmd_args.push(output_path.to_string_lossy().to_string());
 
     let output = Command::new(&ffmpeg)
-        .args([
-            "-i", &clip.path.to_string_lossy(),
-            "-vf", &scale,
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-crf", "30",
-            "-pix_fmt", "yuv420p",
-            "-r", "24",
-            "-an",
-            "-y",
-            &output_path.to_string_lossy(),
-        ])
+        .args(&cmd_args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

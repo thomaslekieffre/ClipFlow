@@ -33,6 +33,10 @@ function App() {
     closePreview,
     watermarkEnabled,
     toggleWatermark,
+    exportFormat,
+    exportQuality,
+    setExportFormat,
+    setExportQuality,
     refreshState,
     startRecording,
     stopRecording,
@@ -351,7 +355,11 @@ function App() {
               clipCount={clips.length}
               exporting={exporting}
               exportProgress={exportProgress}
+              exportFormat={exportFormat}
+              exportQuality={exportQuality}
               onExport={handleExport}
+              onFormatChange={setExportFormat}
+              onQualityChange={setExportQuality}
             />
             {!exporting && (
               <div className="text-xs text-zinc-400 dark:text-zinc-600 flex gap-3">

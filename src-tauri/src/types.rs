@@ -17,6 +17,10 @@ pub struct Clip {
     pub region: Region,
     pub has_audio: bool,
     pub thumbnail_path: Option<PathBuf>,
+    #[serde(default)]
+    pub trim_start_ms: u64,
+    #[serde(default)]
+    pub trim_end_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,8 +75,28 @@ pub enum ExportFormat {
     Gif,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExportSettings {
-    pub format: ExportFormat,
-    pub transitions: Vec<Transition>,
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportQuality {
+    High,
+    Medium,
+    Low,
+}
+
+impl ExportQuality {
+    pub fn crf(&self) -> u32 {
+        match self {
+            ExportQuality::High => 18,
+            ExportQuality::Medium => 23,
+            ExportQuality::Low => 28,
+        }
+    }
+
+    pub fn preset(&self) -> &'static str {
+        match self {
+            ExportQuality::High => "slow",
+            ExportQuality::Medium => "medium",
+            ExportQuality::Low => "fast",
+        }
+    }
 }

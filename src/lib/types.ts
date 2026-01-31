@@ -12,6 +12,8 @@ export interface Clip {
   region: Region;
   has_audio: boolean;
   thumbnail_path: string | null;
+  trim_start_ms: number;
+  trim_end_ms: number;
 }
 
 export type TransitionType =
@@ -42,8 +44,4 @@ export interface Transition {
 export type RecordingState = "idle" | "recording" | "paused";
 
 export type ExportFormat = "mp4" | "gif";
-
-export interface ExportSettings {
-  format: ExportFormat;
-  transitions: Transition[];
-}
+export type ExportQuality = "high" | "medium" | "low";

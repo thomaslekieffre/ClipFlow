@@ -75,6 +75,7 @@ pub fn run() {
             commands::reorder_clips,
             commands::delete_clip,
             commands::set_transition,
+            commands::set_clip_trim,
             commands::start_recording,
             commands::stop_recording,
             commands::cancel_recording,

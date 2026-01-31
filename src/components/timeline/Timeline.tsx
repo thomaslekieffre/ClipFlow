@@ -16,7 +16,7 @@ import { SortableClipCard } from "./SortableClipCard";
 import { TransitionIcon } from "./TransitionIcon";
 
 export function Timeline() {
-  const { clips, transitions, reorderClips, deleteClip, setTransition } =
+  const { clips, transitions, reorderClips, deleteClip, setTransition, setClipTrim } =
     useAppStore();
 
   const sensors = useSensors(
@@ -61,6 +61,7 @@ export function Timeline() {
                   clip={clip}
                   index={index}
                   onDelete={() => deleteClip(clip.id)}
+                  onTrim={(start, end) => setClipTrim(clip.id, start, end)}
                 />
                 {/* Transition indicator between clips */}
                 {index < clips.length - 1 && (

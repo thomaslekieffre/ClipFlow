@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Clip, RecordingState, Region, Transition, TransitionType } from "../lib/types";
+import type { Clip, ExportFormat, ExportQuality, RecordingState, Region, Transition, TransitionType } from "../lib/types";
 import * as api from "../lib/tauri";
 
 type Theme = "light" | "dark";
@@ -23,6 +23,8 @@ interface AppStore {
   previewPath: string | null;
   previewError: string | null;
   watermarkEnabled: boolean;
+  exportFormat: ExportFormat;
+  exportQuality: ExportQuality;
 
   // Actions
   refreshState: () => Promise<void>;
@@ -45,6 +47,9 @@ interface AppStore {
   setPreviewProgress: (progress: number) => void;
   closePreview: () => void;
   toggleWatermark: () => void;
+  setExportFormat: (format: ExportFormat) => void;
+  setExportQuality: (quality: ExportQuality) => void;
+  setClipTrim: (clipId: string, trimStartMs: number, trimEndMs: number) => Promise<void>;
   toggleTheme: () => void;
   ensureFfmpeg: () => Promise<void>;
 }
@@ -74,6 +79,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
   previewProgress: 0,
   previewPath: null,
   previewError: null,
+  exportFormat: ((): ExportFormat => {
+    try {
+      const saved = localStorage.getItem("clipflow-format");
+      if (saved === "mp4" || saved === "gif") return saved;
+    } catch {}
+    return "mp4";
+  })(),
+  exportQuality: ((): ExportQuality => {
+    try {
+      const saved = localStorage.getItem("clipflow-quality");
+      if (saved === "high" || saved === "medium" || saved === "low") return saved;
+    } catch {}
+    return "medium";
+  })(),
   watermarkEnabled: (() => {
     try {
       const saved = localStorage.getItem("clipflow-watermark");
@@ -162,7 +181,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   exportVideo: async () => {
     set({ exporting: true, exportProgress: 0, exportError: null, exportSuccess: null });
     try {
-      const path = await api.exportVideo(get().watermarkEnabled);
+      const path = await api.exportVideo(get().watermarkEnabled, get().exportFormat, get().exportQuality);
       set({ exporting: false, exportProgress: 100, exportSuccess: path });
       return path;
     } catch (e) {
@@ -207,6 +226,22 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const next = !get().watermarkEnabled;
     localStorage.setItem("clipflow-watermark", String(next));
     set({ watermarkEnabled: next });
+  },
+
+  setExportFormat: (format: ExportFormat) => {
+    localStorage.setItem("clipflow-format", format);
+    set({ exportFormat: format });
+  },
+
+  setExportQuality: (quality: ExportQuality) => {
+    localStorage.setItem("clipflow-quality", quality);
+    set({ exportQuality: quality });
+  },
+
+  setClipTrim: async (clipId: string, trimStartMs: number, trimEndMs: number) => {
+    await api.setClipTrim(clipId, trimStartMs, trimEndMs);
+    const clips = await api.getClips();
+    set({ clips });
   },
 
   toggleTheme: () => {

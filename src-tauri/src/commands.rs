@@ -1,6 +1,6 @@
 use crate::recording::manager;
 use crate::state::AppState;
-use crate::types::{Clip, RecordingState, Region, TransitionType};
+use crate::types::{Clip, ExportFormat, ExportQuality, RecordingState, Region, TransitionType};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_notification::NotificationExt;
@@ -80,6 +80,21 @@ pub fn set_transition(
         return Err(format!("Transition index {} out of bounds", index));
     }
     state.transitions[index].transition_type = transition_type;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_clip_trim(
+    state: State<'_, Mutex<AppState>>,
+    clip_id: String,
+    trim_start_ms: u64,
+    trim_end_ms: u64,
+) -> Result<(), String> {
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    let clip = state.clips.iter_mut().find(|c| c.id == clip_id)
+        .ok_or_else(|| format!("Clip not found: {}", clip_id))?;
+    clip.trim_start_ms = trim_start_ms;
+    clip.trim_end_ms = trim_end_ms;
     Ok(())
 }
 
@@ -219,6 +234,8 @@ pub async fn export_video(
     state: State<'_, Mutex<AppState>>,
     app: AppHandle,
     watermark: bool,
+    format: ExportFormat,
+    quality: ExportQuality,
 ) -> Result<String, String> {
     let (clips, transitions) = {
         let s = state.lock().map_err(|e| e.to_string())?;
@@ -229,9 +246,9 @@ pub async fn export_video(
         return Err("No clips to export".into());
     }
 
-    eprintln!("[export_video] {} clips, {} transitions, watermark={}", clips.len(), transitions.len(), watermark);
+    eprintln!("[export_video] {} clips, {} transitions, watermark={}, format={:?}, quality={:?}", clips.len(), transitions.len(), watermark, format, quality);
     for (i, clip) in clips.iter().enumerate() {
-        eprintln!("[export_video] Clip {}: {:?} ({}ms)", i, clip.path, clip.duration_ms);
+        eprintln!("[export_video] Clip {}: {:?} ({}ms, trim {}..{})", i, clip.path, clip.duration_ms, clip.trim_start_ms, clip.trim_end_ms);
     }
 
     // Create output directory
@@ -242,16 +259,32 @@ pub async fn export_video(
 
     // Generate filename with timestamp
     let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
-    let output_path = output_dir.join(format!("recording_{}.mp4", timestamp));
+    let ext = match format {
+        ExportFormat::Mp4 => "mp4",
+        ExportFormat::Gif => "gif",
+    };
+    let output_path = output_dir.join(format!("recording_{}.{}", timestamp, ext));
     eprintln!("[export_video] Output: {:?}", output_path);
 
     // Run export
-    crate::export::encoder::export_mp4(&clips, &transitions, &output_path, &app, watermark)
-        .await
-        .map_err(|e| {
-            eprintln!("[export_video] FAILED: {}", e);
-            format!("Export failed: {}", e)
-        })?;
+    match format {
+        ExportFormat::Mp4 => {
+            crate::export::encoder::export_mp4(&clips, &transitions, &output_path, &app, watermark, &quality)
+                .await
+                .map_err(|e| {
+                    eprintln!("[export_video] FAILED: {}", e);
+                    format!("Export failed: {}", e)
+                })?;
+        }
+        ExportFormat::Gif => {
+            crate::export::encoder::export_gif(&clips, &transitions, &output_path, &app, watermark, &quality)
+                .await
+                .map_err(|e| {
+                    eprintln!("[export_video] FAILED: {}", e);
+                    format!("Export failed: {}", e)
+                })?;
+        }
+    }
 
     // Notify user
     let filename = output_path.file_name().unwrap_or_default().to_string_lossy().to_string();

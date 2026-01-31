@@ -85,6 +85,8 @@ pub async fn stop(state: &Mutex<AppState>) -> Result<Clip, String> {
         region,
         has_audio,
         thumbnail_path: thumb,
+        trim_start_ms: 0,
+        trim_end_ms: 0,
     };
 
     // Add clip to state

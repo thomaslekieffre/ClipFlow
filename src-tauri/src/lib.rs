@@ -13,6 +13,14 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Set FFMPEG_DOWNLOAD_DIR so ffmpeg-sidecar downloads to a writable location
+    // (not next to the exe, which may be in Program Files)
+    if let Some(data_dir) = dirs::data_local_dir() {
+        let ffmpeg_dir = data_dir.join("ClipFlow");
+        let _ = std::fs::create_dir_all(&ffmpeg_dir);
+        std::env::set_var("FFMPEG_DOWNLOAD_DIR", &ffmpeg_dir);
+    }
+
     tauri::Builder::default()
         .setup(|app| {
             // Set window icon (needed during dev mode)

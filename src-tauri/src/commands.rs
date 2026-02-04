@@ -339,8 +339,12 @@ pub async fn ensure_ffmpeg() -> Result<String, String> {
     if ffmpeg.exists() {
         return Ok(ffmpeg.to_string_lossy().to_string());
     }
-    // Auto-download FFmpeg
-    ffmpeg_sidecar::download::auto_download()
-        .map_err(|e| format!("Failed to download FFmpeg: {}", e))?;
+    // Auto-download FFmpeg on a blocking thread (it does synchronous HTTP)
+    tokio::task::spawn_blocking(|| {
+        ffmpeg_sidecar::download::auto_download()
+    })
+    .await
+    .map_err(|e| format!("FFmpeg download task failed: {}", e))?
+    .map_err(|e| format!("Failed to download FFmpeg: {}", e))?;
     Ok(ffmpeg.to_string_lossy().to_string())
 }

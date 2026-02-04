@@ -14,6 +14,7 @@ interface AppStore {
   audioEnabled: boolean;
   durationMs: number;
   ffmpegReady: boolean;
+  ffmpegError: string | null;
   exporting: boolean;
   exportProgress: number;
   exportError: string | null;
@@ -71,6 +72,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   audioEnabled: false,
   durationMs: 0,
   ffmpegReady: false,
+  ffmpegError: null,
   exporting: false,
   exportProgress: 0,
   exportError: null,
@@ -251,7 +253,14 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   ensureFfmpeg: async () => {
-    await api.ensureFfmpeg();
-    set({ ffmpegReady: true });
+    try {
+      set({ ffmpegError: null });
+      await api.ensureFfmpeg();
+      set({ ffmpegReady: true });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("FFmpeg init failed:", msg);
+      set({ ffmpegError: msg });
+    }
   },
 }));

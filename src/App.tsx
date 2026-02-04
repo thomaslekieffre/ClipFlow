@@ -18,6 +18,7 @@ function App() {
     currentRegion,
     durationMs,
     ffmpegReady,
+    ffmpegError,
     exporting,
     exportProgress,
     exportError,
@@ -54,7 +55,7 @@ function App() {
 
   // Init
   useEffect(() => {
-    ensureFfmpeg().catch(console.error);
+    ensureFfmpeg();
     refreshState().catch(console.error);
   }, []);
 
@@ -206,10 +207,19 @@ function App() {
             <span className="ml-auto text-xs text-zinc-400 dark:text-zinc-600">Écran entier</span>
           )}
 
-          {!ffmpegReady && (
+          {!ffmpegReady && !ffmpegError && (
             <span className="text-xs text-yellow-600 dark:text-yellow-500 animate-pulse">
               Téléchargement FFmpeg...
             </span>
+          )}
+          {ffmpegError && (
+            <button
+              className="text-xs text-red-500 hover:text-red-400 underline"
+              onClick={() => ensureFfmpeg()}
+              title={ffmpegError}
+            >
+              FFmpeg échoué — réessayer
+            </button>
           )}
 
           <ThemeToggle />

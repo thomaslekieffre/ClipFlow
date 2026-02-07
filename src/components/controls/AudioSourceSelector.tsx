@@ -1,8 +1,12 @@
-import type { AudioSource } from "../../lib/types";
+import { useEffect, useState } from "react";
+import type { AudioDevice, AudioSource } from "../../lib/types";
+import { getAudioDevices } from "../../lib/tauri";
 
 interface Props {
   audioSource: AudioSource;
   onChange: (source: AudioSource) => void;
+  selectedMic: string | null;
+  onMicChange: (deviceName: string | null) => void;
   disabled?: boolean;
 }
 
@@ -13,9 +17,20 @@ const sources: { value: AudioSource; label: string; icon: string }[] = [
   { value: "both", label: "Les deux", icon: "+" },
 ];
 
-export function AudioSourceSelector({ audioSource, onChange, disabled }: Props) {
+export function AudioSourceSelector({ audioSource, onChange, selectedMic, onMicChange, disabled }: Props) {
+  const [micDevices, setMicDevices] = useState<AudioDevice[]>([]);
+  const showMicSelect = audioSource === "microphone" || audioSource === "both";
+
+  useEffect(() => {
+    if (showMicSelect) {
+      getAudioDevices().then((devices) => {
+        setMicDevices(devices.filter((d) => d.is_input));
+      }).catch(() => {});
+    }
+  }, [showMicSelect]);
+
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex items-center gap-1 flex-wrap">
       {sources.map((s) => (
         <button
           key={s.value}
@@ -58,6 +73,21 @@ export function AudioSourceSelector({ audioSource, onChange, disabled }: Props) 
           )}
         </button>
       ))}
+      {showMicSelect && micDevices.length > 0 && (
+        <select
+          value={selectedMic ?? ""}
+          onChange={(e) => onMicChange(e.target.value || null)}
+          disabled={disabled}
+          className="ml-1 px-1.5 py-1 rounded text-[10px] bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border border-zinc-300 dark:border-zinc-600 max-w-[140px] truncate"
+        >
+          <option value="">Par défaut</option>
+          {micDevices.map((d) => (
+            <option key={d.name} value={d.name}>
+              {d.is_default ? `★ ${d.name}` : d.name}
+            </option>
+          ))}
+        </select>
+      )}
     </div>
   );
 }

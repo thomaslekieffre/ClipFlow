@@ -185,3 +185,11 @@ export async function listProjects(): Promise<ProjectSummary[]> {
 export async function deleteProject(projectId: string): Promise<void> {
   return invoke("delete_project", { projectId });
 }
+
+export async function setSelectedMic(deviceName: string | null): Promise<void> {
+  return invoke("set_selected_mic", { deviceName });
+}
+
+export async function getSelectedMic(): Promise<string | null> {
+  return invoke("get_selected_mic");
+}

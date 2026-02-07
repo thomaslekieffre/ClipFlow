@@ -79,6 +79,8 @@ function App() {
     nextOnboardingStep,
     skipOnboarding,
     showOnboarding,
+    selectedMic,
+    setSelectedMic,
   } = useAppStore();
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -430,6 +432,8 @@ function App() {
               <AudioSourceSelector
                 audioSource={audioSource}
                 onChange={setAudioSource}
+                selectedMic={selectedMic}
+                onMicChange={setSelectedMic}
                 disabled={recordingState !== "idle"}
               />
             )}

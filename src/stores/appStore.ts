@@ -47,6 +47,8 @@ interface AppStore {
   // Projects
   projects: ProjectSummary[];
   currentProjectId: string | null;
+  // Mic selection
+  selectedMic: string | null;
   // Onboarding
   onboardingStep: number | null;
 
@@ -93,6 +95,8 @@ interface AppStore {
   loadProject: (projectId: string) => Promise<void>;
   listProjects: () => Promise<void>;
   deleteProject: (projectId: string) => Promise<void>;
+  // Mic selection
+  setSelectedMic: (deviceName: string | null) => Promise<void>;
   // Onboarding
   showOnboarding: () => void;
   nextOnboardingStep: () => void;
@@ -161,6 +165,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   countdownRemaining: 0,
   keystrokeEnabled: false,
   cursorZoomEnabled: false,
+  selectedMic: null,
   projects: [],
   currentProjectId: null,
   onboardingStep: (() => {
@@ -402,6 +407,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
       set({ currentProjectId: null });
     }
     await get().listProjects();
+  },
+
+  setSelectedMic: async (deviceName: string | null) => {
+    await api.setSelectedMic(deviceName);
+    set({ selectedMic: deviceName });
   },
 
   showOnboarding: () => {

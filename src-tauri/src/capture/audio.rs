@@ -117,17 +117,32 @@ pub fn start_system_capture(
     Ok(handle)
 }
 
-/// Start microphone capture writing to WAV
+/// Start microphone capture writing to WAV, optionally using a specific device
 pub fn start_mic_capture(
     output_path: &std::path::Path,
     stop_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<std::thread::JoinHandle<()>, String> {
+    start_mic_capture_device(output_path, stop_flag, None)
+}
+
+pub fn start_mic_capture_device(
+    output_path: &std::path::Path,
+    stop_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    device_name: Option<&str>,
 ) -> Result<std::thread::JoinHandle<()>, String> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use std::sync::atomic::Ordering;
 
     let host = cpal::default_host();
-    let device = host.default_input_device()
-        .ok_or("No default input device found")?;
+    let device = if let Some(name) = device_name {
+        host.input_devices()
+            .map_err(|e| format!("Failed to list input devices: {}", e))?
+            .find(|d| d.name().ok().as_deref() == Some(name))
+            .ok_or_else(|| format!("Microphone '{}' not found", name))?
+    } else {
+        host.default_input_device()
+            .ok_or("No default input device found")?
+    };
 
     let config = device.default_input_config()
         .map_err(|e| format!("Failed to get input config: {}", e))?;

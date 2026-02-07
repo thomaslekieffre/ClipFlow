@@ -52,6 +52,19 @@ pub fn get_audio_devices() -> Result<Vec<AudioDevice>, String> {
 }
 
 #[tauri::command]
+pub fn set_selected_mic(state: State<'_, Mutex<AppState>>, device_name: Option<String>) -> Result<(), String> {
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    state.selected_mic = device_name;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_selected_mic(state: State<'_, Mutex<AppState>>) -> Result<Option<String>, String> {
+    let state = state.lock().map_err(|e| e.to_string())?;
+    Ok(state.selected_mic.clone())
+}
+
+#[tauri::command]
 pub fn get_clips(state: State<'_, Mutex<AppState>>) -> Result<Vec<Clip>, String> {
     let state = state.lock().map_err(|e| e.to_string())?;
     Ok(state.clips.clone())

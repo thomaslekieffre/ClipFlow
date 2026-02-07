@@ -140,6 +140,8 @@ pub fn run() {
             commands::load_project,
             commands::list_projects,
             commands::delete_project,
+            commands::set_selected_mic,
+            commands::get_selected_mic,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ClipFlow");

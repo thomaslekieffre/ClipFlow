@@ -90,7 +90,8 @@ fn start_audio_captures(s: &mut AppState, clip_id: &str) {
     if matches!(audio_source, AudioSource::Microphone | AudioSource::Both) {
         let path = s.temp_dir.join(format!("{}_mic.wav", clip_id));
         let stop_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        match crate::capture::audio::start_mic_capture(&path, stop_flag.clone()) {
+        let mic_name = s.selected_mic.as_deref();
+        match crate::capture::audio::start_mic_capture_device(&path, stop_flag.clone(), mic_name) {
             Ok(handle) => {
                 s.audio_handles.push(AudioCaptureHandle {
                     join_handle: Some(handle),

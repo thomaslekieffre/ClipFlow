@@ -27,3 +27,15 @@ base64 = "0.22"
 opener = "0.7"
 ffmpeg-sidecar = "2.0"
 image = "0.25"
+cpal = "0.15"
+hound = "3.5"
+arboard = "3"
+
+[dependencies.windows]
+version = "0.61"
+features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Dwm",
+    "Win32_UI_Input_KeyboardAndMouse",
+]

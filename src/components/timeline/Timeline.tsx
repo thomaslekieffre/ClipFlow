@@ -14,9 +14,10 @@ import {
 import { useAppStore } from "../../stores/appStore";
 import { SortableClipCard } from "./SortableClipCard";
 import { TransitionIcon } from "./TransitionIcon";
+import { TransitionPresets } from "./TransitionPresets";
 
 export function Timeline() {
-  const { clips, transitions, reorderClips, deleteClip, setTransition, setClipTrim } =
+  const { clips, transitions, reorderClips, deleteClip, setTransition, setClipTrim, applyTransitionPreset } =
     useAppStore();
 
   const sensors = useSensors(
@@ -38,11 +39,17 @@ export function Timeline() {
   const totalDuration = clips.reduce((sum, c) => sum + c.duration_ms, 0);
 
   return (
-    <div className="w-full">
-      {/* Total duration */}
-      <div className="text-xs text-zinc-500 dark:text-zinc-500 mb-3 px-1">
-        {clips.length} clip{clips.length > 1 ? "s" : ""} ·{" "}
-        {(totalDuration / 1000).toFixed(1)}s total
+    <div className="w-full" data-onboarding-timeline>
+      {/* Header with total duration and presets */}
+      <div className="flex items-center justify-between mb-3 px-1">
+        <span className="text-xs text-zinc-500 dark:text-zinc-500">
+          {clips.length} clip{clips.length > 1 ? "s" : ""} ·{" "}
+          {(totalDuration / 1000).toFixed(1)}s total
+        </span>
+        <TransitionPresets
+          onApply={applyTransitionPreset}
+          hasTransitions={transitions.length > 0}
+        />
       </div>
 
       <DndContext

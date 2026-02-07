@@ -8,6 +8,7 @@ interface Props {
 
 export function RecordButton({ state, onClick, disabled }: Props) {
   const isRecording = state === "recording";
+  const isPaused = state === "paused";
 
   return (
     <button
@@ -16,7 +17,7 @@ export function RecordButton({ state, onClick, disabled }: Props) {
       className={`
         flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold transition-all
         ${
-          isRecording
+          isRecording || isPaused
             ? "bg-zinc-200 text-zinc-900 hover:bg-white"
             : "bg-red-600 text-white hover:bg-red-500"
         }
@@ -24,6 +25,11 @@ export function RecordButton({ state, onClick, disabled }: Props) {
       `}
     >
       {isRecording ? (
+        <>
+          <span className="w-3 h-3 rounded-sm bg-zinc-900" />
+          Stop
+        </>
+      ) : isPaused ? (
         <>
           <span className="w-3 h-3 rounded-sm bg-zinc-900" />
           Stop

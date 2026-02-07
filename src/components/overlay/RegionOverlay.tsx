@@ -10,23 +10,70 @@ interface Rect {
   height: number;
 }
 
+interface WindowInfo {
+  title: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface MonitorInfo {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export function RegionOverlay() {
   const [drawing, setDrawing] = useState(false);
   const [startPos, setStartPos] = useState({ x: 0, y: 0 });
   const [rect, setRect] = useState<Rect | null>(null);
   const [confirmed, setConfirmed] = useState(false);
+  const [windows, setWindows] = useState<WindowInfo[]>([]);
+  const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
+  const [hoveredWindow, setHoveredWindow] = useState<number | null>(null);
+  const [overlayOffset, setOverlayOffset] = useState({ x: 0, y: 0 });
+  const [scaleFactor, setScaleFactor] = useState(1);
   const overlayRef = useRef<HTMLDivElement>(null);
 
-  // Auto-focus the overlay so keyboard events work
+  // Auto-focus and load windows + monitors
   useEffect(() => {
     overlayRef.current?.focus();
+    // Get overlay window position for coordinate mapping
+    const win = getCurrentWebviewWindow();
+    Promise.all([
+      win.outerPosition(),
+      win.scaleFactor(),
+    ]).then(([pos, scale]) => {
+      setOverlayOffset({ x: pos.x, y: pos.y });
+      setScaleFactor(scale);
+    }).catch(() => {});
+    // Load visible windows and monitors
+    invoke<WindowInfo[]>("get_visible_windows").then(setWindows).catch(() => {});
+    invoke<MonitorInfo[]>("get_monitors_info").then(setMonitors).catch(() => {});
   }, []);
+
+  // Convert physical screen coords to CSS coords relative to overlay
+  const toLocal = useCallback((physX: number, physY: number, physW: number, physH: number) => ({
+    x: (physX - overlayOffset.x) / scaleFactor,
+    y: (physY - overlayOffset.y) / scaleFactor,
+    width: physW / scaleFactor,
+    height: physH / scaleFactor,
+  }), [overlayOffset, scaleFactor]);
+
+  const handleWindowSnap = useCallback((win: WindowInfo) => {
+    const local = toLocal(win.x, win.y, win.width, win.height);
+    setRect(local);
+    setConfirmed(true);
+  }, [toLocal]);
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       if (confirmed) return;
-      // Ignore clicks on buttons
+      // Ignore clicks on buttons and window labels
       if ((e.target as HTMLElement).closest("button")) return;
+      if ((e.target as HTMLElement).closest("[data-window-snap]")) return;
       setDrawing(true);
       setStartPos({ x: e.clientX, y: e.clientY });
       setRect({ x: e.clientX, y: e.clientY, width: 0, height: 0 });
@@ -129,10 +176,60 @@ export function RegionOverlay() {
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
     >
+      {/* Monitor labels */}
+      {monitors.map((m, i) => {
+        const local = toLocal(m.x, m.y, m.width, m.height);
+        return (
+          <div
+            key={`monitor-${i}`}
+            className="absolute border border-zinc-500/30 pointer-events-none"
+            style={{ left: local.x, top: local.y, width: local.width, height: local.height, zIndex: 1 }}
+          >
+            <div className="absolute top-2 left-2 bg-zinc-800/70 text-zinc-300 text-[10px] px-2 py-0.5 rounded font-mono pointer-events-none">
+              Écran {i + 1} — {m.width}×{m.height}
+            </div>
+          </div>
+        );
+      })}
+
+      {/* Window outlines (visual only) + clickable title pills */}
+      {!confirmed && windows.map((win, i) => {
+        const local = toLocal(win.x, win.y, win.width, win.height);
+        if (local.width < 40 || local.height < 40) return null;
+        return (
+          <div key={`win-${i}`}>
+            {/* Border outline — pointer-events-none so drawing works through it */}
+            <div
+              className={`absolute pointer-events-none transition-all duration-100 ${
+                hoveredWindow === i
+                  ? "border-2 border-blue-400 bg-blue-400/8"
+                  : "border border-zinc-400/20"
+              }`}
+              style={{ left: local.x, top: local.y, width: local.width, height: local.height, zIndex: 2 }}
+            />
+            {/* Clickable title pill — small, doesn't block drawing */}
+            <button
+              data-window-snap
+              className={`absolute text-[10px] px-2 py-0.5 rounded whitespace-nowrap max-w-[180px] truncate transition-all cursor-pointer ${
+                hoveredWindow === i
+                  ? "bg-blue-500 text-white shadow-lg"
+                  : "bg-zinc-800/60 text-zinc-300 hover:bg-blue-500 hover:text-white"
+              }`}
+              style={{ left: local.x + 4, top: local.y + 4, zIndex: 6 }}
+              onMouseEnter={() => setHoveredWindow(i)}
+              onMouseLeave={() => setHoveredWindow(null)}
+              onClick={(e) => { e.stopPropagation(); handleWindowSnap(win); }}
+            >
+              {win.title}
+            </button>
+          </div>
+        );
+      })}
+
       {/* Instructions */}
       {!rect && (
         <div className="absolute top-8 left-1/2 -translate-x-1/2 bg-black/80 text-white px-5 py-2.5 rounded-lg text-sm pointer-events-none z-50">
-          Dessine un rectangle pour sélectionner la zone · ESC pour annuler
+          Clique sur une fenêtre ou dessine un rectangle · ESC pour annuler
         </div>
       )}
 

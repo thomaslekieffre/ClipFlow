@@ -1,5 +1,15 @@
 import { create } from "zustand";
-import type { Clip, ExportFormat, ExportQuality, RecordingState, Region, Transition, TransitionType } from "../lib/types";
+import type {
+  AudioSource,
+  Clip,
+  ExportFormat,
+  ExportQuality,
+  ProjectSummary,
+  RecordingState,
+  Region,
+  Transition,
+  TransitionType,
+} from "../lib/types";
 import * as api from "../lib/tauri";
 
 type Theme = "light" | "dark";
@@ -11,7 +21,7 @@ interface AppStore {
   clips: Clip[];
   transitions: Transition[];
   currentRegion: Region | null;
-  audioEnabled: boolean;
+  audioSource: AudioSource;
   durationMs: number;
   ffmpegReady: boolean;
   ffmpegError: string | null;
@@ -26,15 +36,31 @@ interface AppStore {
   watermarkEnabled: boolean;
   exportFormat: ExportFormat;
   exportQuality: ExportQuality;
+  // Countdown
+  countdownSeconds: number;
+  countdownActive: boolean;
+  countdownRemaining: number;
+  // Keystroke display
+  keystrokeEnabled: boolean;
+  // Cursor zoom
+  cursorZoomEnabled: boolean;
+  // Projects
+  projects: ProjectSummary[];
+  currentProjectId: string | null;
+  // Onboarding
+  onboardingStep: number | null;
 
   // Actions
   refreshState: () => Promise<void>;
   startRecording: () => Promise<void>;
   stopRecording: () => Promise<Clip>;
+  pauseRecording: () => Promise<void>;
+  resumeRecording: () => Promise<void>;
   cancelRecording: () => Promise<void>;
-  toggleAudio: () => Promise<void>;
+  setAudioSource: (source: AudioSource) => Promise<void>;
   deleteClip: (clipId: string) => Promise<void>;
   setTransition: (index: number, type_: TransitionType) => Promise<void>;
+  setAllTransitions: (type_: TransitionType) => Promise<void>;
   reorderClips: (clipIds: string[]) => Promise<void>;
   setCaptureRegion: (region: Region) => Promise<void>;
   openRegionSelector: () => Promise<void>;
@@ -53,6 +79,26 @@ interface AppStore {
   setClipTrim: (clipId: string, trimStartMs: number, trimEndMs: number) => Promise<void>;
   toggleTheme: () => void;
   ensureFfmpeg: () => Promise<void>;
+  // Countdown
+  setCountdownSeconds: (seconds: number) => void;
+  startCountdown: () => void;
+  // Keystroke
+  toggleKeystroke: () => Promise<void>;
+  // Cursor zoom
+  toggleCursorZoom: () => Promise<void>;
+  // Clipboard export
+  copyToClipboard: (path: string) => Promise<void>;
+  // Projects
+  saveProject: (name: string) => Promise<void>;
+  loadProject: (projectId: string) => Promise<void>;
+  listProjects: () => Promise<void>;
+  deleteProject: (projectId: string) => Promise<void>;
+  // Onboarding
+  showOnboarding: () => void;
+  nextOnboardingStep: () => void;
+  skipOnboarding: () => void;
+  // Transition presets
+  applyTransitionPreset: (preset: string) => Promise<void>;
 }
 
 const getInitialTheme = (): Theme => {
@@ -69,7 +115,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   clips: [],
   transitions: [],
   currentRegion: null,
-  audioEnabled: false,
+  audioSource: "none",
   durationMs: 0,
   ffmpegReady: false,
   ffmpegError: null,
@@ -101,6 +147,28 @@ export const useAppStore = create<AppStore>((set, get) => ({
       return saved === null ? true : saved === "true";
     } catch { return true; }
   })(),
+  countdownSeconds: (() => {
+    try {
+      const saved = localStorage.getItem("clipflow-countdown");
+      if (saved) {
+        const n = parseInt(saved, 10);
+        if (n === 0 || n === 3 || n === 5) return n;
+      }
+    } catch {}
+    return 3;
+  })(),
+  countdownActive: false,
+  countdownRemaining: 0,
+  keystrokeEnabled: false,
+  cursorZoomEnabled: false,
+  projects: [],
+  currentProjectId: null,
+  onboardingStep: (() => {
+    try {
+      const seen = localStorage.getItem("clipflow-onboarding-done");
+      return seen ? null : 0;
+    } catch { return 0; }
+  })(),
 
   refreshState: async () => {
     const [recordingState, clips, transitions] = await Promise.all([
@@ -112,6 +180,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   startRecording: async () => {
+    const { countdownSeconds } = get();
+    if (countdownSeconds > 0) {
+      set({ countdownActive: true, countdownRemaining: countdownSeconds });
+      // Countdown is handled in App.tsx via interval
+      return;
+    }
     await api.startRecording();
     set({ recordingState: "recording", durationMs: 0 });
   },
@@ -126,14 +200,25 @@ export const useAppStore = create<AppStore>((set, get) => ({
     return clip;
   },
 
+  pauseRecording: async () => {
+    await api.pauseRecording();
+    set({ recordingState: "paused" });
+  },
+
+  resumeRecording: async () => {
+    await api.resumeRecording();
+    set({ recordingState: "recording" });
+  },
+
   cancelRecording: async () => {
     await api.cancelRecording();
     set({ recordingState: "idle", durationMs: 0 });
   },
 
-  toggleAudio: async () => {
-    const enabled = await api.toggleAudio();
-    set({ audioEnabled: enabled });
+  setAudioSource: async (source: AudioSource) => {
+    await api.setAudioSource(source);
+    localStorage.setItem("clipflow-audio-source", source);
+    set({ audioSource: source });
   },
 
   deleteClip: async (clipId: string) => {
@@ -147,6 +232,12 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   setTransition: async (index: number, type_: TransitionType) => {
     await api.setTransition(index, type_);
+    const transitions = await api.getTransitions();
+    set({ transitions });
+  },
+
+  setAllTransitions: async (type_: TransitionType) => {
+    await api.setAllTransitions(type_);
     const transitions = await api.getTransitions();
     set({ transitions });
   },
@@ -174,7 +265,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   updateDuration: async () => {
-    if (get().recordingState === "recording") {
+    const state = get().recordingState;
+    if (state === "recording" || state === "paused") {
       const ms = await api.getRecordingDurationMs();
       set({ durationMs: ms });
     }
@@ -262,5 +354,103 @@ export const useAppStore = create<AppStore>((set, get) => ({
       console.error("FFmpeg init failed:", msg);
       set({ ffmpegError: msg });
     }
+  },
+
+  setCountdownSeconds: (seconds: number) => {
+    localStorage.setItem("clipflow-countdown", String(seconds));
+    set({ countdownSeconds: seconds });
+  },
+
+  startCountdown: () => {
+    set({ countdownActive: true, countdownRemaining: get().countdownSeconds });
+  },
+
+  toggleKeystroke: async () => {
+    const enabled = await api.toggleKeystrokeDisplay();
+    set({ keystrokeEnabled: enabled });
+  },
+
+  toggleCursorZoom: async () => {
+    const enabled = await api.toggleCursorZoom();
+    set({ cursorZoomEnabled: enabled });
+  },
+
+  copyToClipboard: async (path: string) => {
+    await api.copyFileToClipboard(path);
+  },
+
+  saveProject: async (name: string) => {
+    const id = await api.saveProject(name);
+    set({ currentProjectId: id });
+    await get().listProjects();
+  },
+
+  loadProject: async (projectId: string) => {
+    await api.loadProject(projectId);
+    set({ currentProjectId: projectId });
+    await get().refreshState();
+  },
+
+  listProjects: async () => {
+    const projects = await api.listProjects();
+    set({ projects });
+  },
+
+  deleteProject: async (projectId: string) => {
+    await api.deleteProject(projectId);
+    if (get().currentProjectId === projectId) {
+      set({ currentProjectId: null });
+    }
+    await get().listProjects();
+  },
+
+  showOnboarding: () => {
+    set({ onboardingStep: 0 });
+  },
+
+  nextOnboardingStep: () => {
+    const step = get().onboardingStep;
+    if (step !== null && step < 4) {
+      set({ onboardingStep: step + 1 });
+    } else {
+      localStorage.setItem("clipflow-onboarding-done", "true");
+      set({ onboardingStep: null });
+    }
+  },
+
+  skipOnboarding: () => {
+    localStorage.setItem("clipflow-onboarding-done", "true");
+    set({ onboardingStep: null });
+  },
+
+  applyTransitionPreset: async (preset: string) => {
+    const transitions = get().transitions;
+    if (transitions.length === 0) return;
+
+    switch (preset) {
+      case "professional":
+        await api.setAllTransitions("fade");
+        break;
+      case "dynamic": {
+        const dynamicTypes: TransitionType[] = ["slide", "zoom", "slideright", "slideup"];
+        for (let i = 0; i < transitions.length; i++) {
+          await api.setTransition(i, dynamicTypes[i % dynamicTypes.length]);
+        }
+        break;
+      }
+      case "minimal":
+        await api.setAllTransitions("cut");
+        break;
+      case "creative": {
+        const creativeTypes: TransitionType[] = ["circleopen", "pixelize", "radial", "dissolve", "wipeleft"];
+        for (let i = 0; i < transitions.length; i++) {
+          await api.setTransition(i, creativeTypes[i % creativeTypes.length]);
+        }
+        break;
+      }
+    }
+
+    const updated = await api.getTransitions();
+    set({ transitions: updated });
   },
 }));

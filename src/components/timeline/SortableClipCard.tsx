@@ -4,6 +4,7 @@ import { CSS } from "@dnd-kit/utilities";
 import type { Clip } from "../../lib/types";
 import { getThumbnailBase64 } from "../../lib/tauri";
 import { TrimModal } from "./TrimModal";
+import { AnnotationEditor } from "../annotations/AnnotationEditor";
 
 interface Props {
   clip: Clip;
@@ -17,6 +18,7 @@ export function SortableClipCard({ clip, index, onDelete, onTrim }: Props) {
   const [thumbFailed, setThumbFailed] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showTrim, setShowTrim] = useState(false);
+  const [showAnnotations, setShowAnnotations] = useState(false);
   const confirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const {
@@ -69,6 +71,11 @@ export function SortableClipCard({ clip, index, onDelete, onTrim }: Props) {
     setShowTrim(true);
   };
 
+  const handleAnnotateClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setShowAnnotations(true);
+  };
+
   const isTrimmed = clip.trim_start_ms > 0 || clip.trim_end_ms > 0;
   const effectiveDuration = isTrimmed
     ? ((clip.trim_end_ms || clip.duration_ms) - clip.trim_start_ms) / 1000
@@ -111,20 +118,32 @@ export function SortableClipCard({ clip, index, onDelete, onTrim }: Props) {
             </div>
           )}
 
-          {/* Trim button overlay */}
-          <button
-            onClick={handleTrimClick}
-            className="absolute bottom-1 right-1 opacity-0 group-hover:opacity-100 w-6 h-6 flex items-center justify-center rounded bg-black/50 hover:bg-black/70 text-white transition-all"
-            title="Trim"
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="6" cy="6" r="3" />
-              <circle cx="6" cy="18" r="3" />
-              <line x1="20" y1="4" x2="8.12" y2="15.88" />
-              <line x1="14.47" y1="14.48" x2="20" y2="20" />
-              <line x1="8.12" y1="8.12" x2="12" y2="12" />
-            </svg>
-          </button>
+          {/* Action buttons overlay */}
+          <div className="absolute bottom-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-all">
+            <button
+              onClick={handleAnnotateClick}
+              className="w-6 h-6 flex items-center justify-center rounded bg-black/50 hover:bg-black/70 text-white transition-all"
+              title="Annoter"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 19l7-7 3 3-7 7-3-3z" />
+                <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
+              </svg>
+            </button>
+            <button
+              onClick={handleTrimClick}
+              className="w-6 h-6 flex items-center justify-center rounded bg-black/50 hover:bg-black/70 text-white transition-all"
+              title="Trim"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="6" cy="6" r="3" />
+                <circle cx="6" cy="18" r="3" />
+                <line x1="20" y1="4" x2="8.12" y2="15.88" />
+                <line x1="14.47" y1="14.48" x2="20" y2="20" />
+                <line x1="8.12" y1="8.12" x2="12" y2="12" />
+              </svg>
+            </button>
+          </div>
         </div>
 
         {/* Info bar */}
@@ -156,6 +175,13 @@ export function SortableClipCard({ clip, index, onDelete, onTrim }: Props) {
           clip={clip}
           onSave={onTrim}
           onClose={() => setShowTrim(false)}
+        />
+      )}
+
+      {showAnnotations && (
+        <AnnotationEditor
+          clip={clip}
+          onClose={() => setShowAnnotations(false)}
         />
       )}
     </>

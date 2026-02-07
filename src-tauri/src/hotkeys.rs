@@ -12,6 +12,7 @@ pub fn handler(app: &tauri::AppHandle, shortcut: &Shortcut, event: tauri_plugin_
 
     match shortcut.key {
         Code::F9 => handle_f9(app),
+        Code::F10 => handle_f10(app),
         Code::Escape => handle_escape(app),
         _ => {}
     }
@@ -37,7 +38,7 @@ fn handle_f9(app: &tauri::AppHandle) {
                 let _ = app.emit("recording-state-changed", "recording");
             }
         }
-        RecordingState::Recording => {
+        RecordingState::Recording | RecordingState::Paused => {
             let app_clone = app.clone();
             tauri::async_runtime::spawn(async move {
                 let state = app_clone.state::<Mutex<AppState>>();
@@ -51,6 +52,43 @@ fn handle_f9(app: &tauri::AppHandle) {
                     }
                 }
             });
+        }
+    }
+}
+
+fn handle_f10(app: &tauri::AppHandle) {
+    let state = app.state::<Mutex<AppState>>();
+    let current_state = {
+        let Ok(s) = state.lock() else {
+            eprintln!("[hotkey] Failed to lock state");
+            return;
+        };
+        s.recording_state
+    };
+
+    match current_state {
+        RecordingState::Recording => {
+            let app_clone = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let state = app_clone.state::<Mutex<AppState>>();
+                match manager::pause(&state).await {
+                    Ok(()) => {
+                        eprintln!("[hotkey] Recording paused via F10");
+                        let _ = app_clone.emit("recording-state-changed", "paused");
+                    }
+                    Err(e) => {
+                        eprintln!("[hotkey] Pause recording failed: {}", e);
+                    }
+                }
+            });
+        }
+        RecordingState::Paused => {
+            if let Err(e) = manager::resume(&state) {
+                eprintln!("[hotkey] Resume recording failed: {}", e);
+            } else {
+                eprintln!("[hotkey] Recording resumed via F10");
+                let _ = app.emit("recording-state-changed", "recording");
+            }
         }
         _ => {}
     }
@@ -66,7 +104,7 @@ fn handle_escape(app: &tauri::AppHandle) {
         s.recording_state
     };
 
-    if current_state == RecordingState::Recording {
+    if current_state == RecordingState::Recording || current_state == RecordingState::Paused {
         if let Err(e) = manager::cancel(&state) {
             eprintln!("[hotkey] Cancel recording failed: {}", e);
         } else {

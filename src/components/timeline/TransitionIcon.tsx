@@ -37,6 +37,8 @@ const TRANSITIONS: TransitionInfo[] = [
   { type: "radial", label: "Radial", icon: "✶", group: "Effet" },
   { type: "smoothleft", label: "← Smooth", icon: "≪", group: "Effet" },
   { type: "smoothright", label: "Smooth →", icon: "≫", group: "Effet" },
+  // Cut
+  { type: "cut", label: "Cut", icon: "✂", group: "Cut" },
 ];
 
 const LABEL_MAP = Object.fromEntries(TRANSITIONS.map((t) => [t.type, t.label]));
@@ -86,7 +88,7 @@ export function TransitionIcon({ transition, onChange }: Props) {
             if (e.target === e.currentTarget) setOpen(false);
           }}
         >
-          <div className="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-2xl shadow-2xl p-5 w-[340px] animate-fade-in">
+          <div className="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-2xl shadow-2xl p-5 w-full max-w-sm mx-4 animate-fade-in">
             {/* Header */}
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">

@@ -2,14 +2,36 @@ mod capture;
 mod commands;
 mod export;
 mod hotkeys;
+mod project;
 mod recording;
 mod region;
 mod state;
 mod types;
 
 use state::AppState;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::Manager;
+
+/// Return the path to FFmpeg, checking our AppData location first,
+/// then the sidecar location, then PATH fallback.
+pub fn ffmpeg_bin() -> PathBuf {
+    // 1. Check our custom AppData/Local/ClipFlow/ location
+    if let Some(data_dir) = dirs::data_local_dir() {
+        let custom = data_dir.join("ClipFlow").join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
+        if custom.exists() {
+            return custom;
+        }
+    }
+    // 2. Fall back to sidecar location (next to exe)
+    ffmpeg_sidecar::paths::ffmpeg_path()
+}
+
+/// Return the path to FFprobe (same directory as FFmpeg).
+pub fn ffprobe_bin() -> PathBuf {
+    let name = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
+    ffmpeg_bin().with_file_name(name)
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -64,7 +86,7 @@ pub fn run() {
         })
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_shortcuts(["F9", "Escape"])
+                .with_shortcuts(["F9", "F10", "Escape"])
                 .unwrap_or_else(|e| {
                     eprintln!("[init] Failed to register shortcuts: {}", e);
                     tauri_plugin_global_shortcut::Builder::new()
@@ -79,13 +101,19 @@ pub fn run() {
             commands::get_recording_state,
             commands::set_capture_region,
             commands::toggle_audio,
+            commands::set_audio_source,
+            commands::get_audio_source,
+            commands::get_audio_devices,
             commands::get_clips,
             commands::reorder_clips,
             commands::delete_clip,
             commands::set_transition,
+            commands::set_all_transitions,
             commands::set_clip_trim,
             commands::start_recording,
             commands::stop_recording,
+            commands::pause_recording,
+            commands::resume_recording,
             commands::cancel_recording,
             commands::get_recording_duration_ms,
             commands::get_thumbnail_base64,
@@ -96,6 +124,22 @@ pub fn run() {
             commands::export_video,
             commands::preview_video,
             commands::ensure_ffmpeg,
+            commands::get_visible_windows,
+            commands::set_countdown,
+            commands::get_countdown,
+            commands::set_clip_annotations,
+            commands::get_clip_annotations,
+            commands::set_subtitles,
+            commands::get_subtitles,
+            commands::toggle_keystroke_display,
+            commands::get_keystroke_enabled,
+            commands::toggle_cursor_zoom,
+            commands::get_cursor_zoom_enabled,
+            commands::copy_file_to_clipboard,
+            commands::save_project,
+            commands::load_project,
+            commands::list_projects,
+            commands::delete_project,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ClipFlow");

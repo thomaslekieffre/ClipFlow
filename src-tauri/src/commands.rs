@@ -1,6 +1,9 @@
 use crate::recording::manager;
 use crate::state::AppState;
-use crate::types::{Clip, ExportFormat, ExportQuality, RecordingState, Region, TransitionType};
+use crate::types::{
+    Annotation, AudioDevice, AudioSource, Clip, ExportFormat, ExportQuality,
+    RecordingState, Region, Subtitle, TransitionType, WindowInfo,
+};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_notification::NotificationExt;
@@ -21,8 +24,31 @@ pub fn set_capture_region(state: State<'_, Mutex<AppState>>, region: Region) -> 
 #[tauri::command]
 pub fn toggle_audio(state: State<'_, Mutex<AppState>>) -> Result<bool, String> {
     let mut state = state.lock().map_err(|e| e.to_string())?;
-    state.audio_enabled = !state.audio_enabled;
-    Ok(state.audio_enabled)
+    let enabled = state.audio_source != AudioSource::None;
+    if enabled {
+        state.audio_source = AudioSource::None;
+    } else {
+        state.audio_source = AudioSource::System;
+    }
+    Ok(state.audio_source != AudioSource::None)
+}
+
+#[tauri::command]
+pub fn set_audio_source(state: State<'_, Mutex<AppState>>, source: AudioSource) -> Result<(), String> {
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    state.audio_source = source;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_audio_source(state: State<'_, Mutex<AppState>>) -> Result<AudioSource, String> {
+    let state = state.lock().map_err(|e| e.to_string())?;
+    Ok(state.audio_source)
+}
+
+#[tauri::command]
+pub fn get_audio_devices() -> Result<Vec<AudioDevice>, String> {
+    crate::capture::audio::list_audio_devices()
 }
 
 #[tauri::command]
@@ -66,6 +92,12 @@ pub fn delete_clip(state: State<'_, Mutex<AppState>>, clip_id: String) -> Result
     state.clips.retain(|c| c.id != clip_id);
     let max_transitions = state.clips.len().saturating_sub(1);
     state.transitions.truncate(max_transitions);
+
+    // Clean up associated data
+    state.annotations.remove(&clip_id);
+    state.clip_keystrokes.remove(&clip_id);
+    state.clip_cursor_positions.remove(&clip_id);
+
     Ok(())
 }
 
@@ -80,6 +112,18 @@ pub fn set_transition(
         return Err(format!("Transition index {} out of bounds", index));
     }
     state.transitions[index].transition_type = transition_type;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_all_transitions(
+    state: State<'_, Mutex<AppState>>,
+    transition_type: TransitionType,
+) -> Result<(), String> {
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    for t in state.transitions.iter_mut() {
+        t.transition_type = transition_type;
+    }
     Ok(())
 }
 
@@ -109,6 +153,16 @@ pub async fn stop_recording(state: State<'_, Mutex<AppState>>) -> Result<Clip, S
 }
 
 #[tauri::command]
+pub async fn pause_recording(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
+    manager::pause(&state).await
+}
+
+#[tauri::command]
+pub fn resume_recording(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
+    manager::resume(&state)
+}
+
+#[tauri::command]
 pub fn cancel_recording(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
     manager::cancel(&state)
 }
@@ -116,10 +170,11 @@ pub fn cancel_recording(state: State<'_, Mutex<AppState>>) -> Result<(), String>
 #[tauri::command]
 pub fn get_recording_duration_ms(state: State<'_, Mutex<AppState>>) -> Result<u64, String> {
     let state = state.lock().map_err(|e| e.to_string())?;
-    match state.recording_start {
-        Some(start) => Ok(start.elapsed().as_millis() as u64),
-        None => Ok(0),
-    }
+    let current = match state.recording_start {
+        Some(start) => start.elapsed().as_millis() as u64,
+        None => 0,
+    };
+    Ok(state.pause_accumulated_ms + current)
 }
 
 #[tauri::command]
@@ -237,9 +292,9 @@ pub async fn export_video(
     format: ExportFormat,
     quality: ExportQuality,
 ) -> Result<String, String> {
-    let (clips, transitions) = {
+    let (clips, transitions, clip_keystrokes, subtitles, clip_annotations, clip_cursor_positions) = {
         let s = state.lock().map_err(|e| e.to_string())?;
-        (s.clips.clone(), s.transitions.clone())
+        (s.clips.clone(), s.transitions.clone(), s.clip_keystrokes.clone(), s.subtitles.clone(), s.annotations.clone(), s.clip_cursor_positions.clone())
     };
 
     if clips.is_empty() {
@@ -269,7 +324,7 @@ pub async fn export_video(
     // Run export
     match format {
         ExportFormat::Mp4 => {
-            crate::export::encoder::export_mp4(&clips, &transitions, &output_path, &app, watermark, &quality)
+            crate::export::encoder::export_mp4(&clips, &transitions, &output_path, &app, watermark, &quality, &clip_keystrokes, &subtitles, &clip_annotations, &clip_cursor_positions)
                 .await
                 .map_err(|e| {
                     eprintln!("[export_video] FAILED: {}", e);
@@ -277,7 +332,7 @@ pub async fn export_video(
                 })?;
         }
         ExportFormat::Gif => {
-            crate::export::encoder::export_gif(&clips, &transitions, &output_path, &app, watermark, &quality)
+            crate::export::encoder::export_gif(&clips, &transitions, &output_path, &app, watermark, &quality, &clip_keystrokes, &subtitles, &clip_annotations, &clip_cursor_positions)
                 .await
                 .map_err(|e| {
                     eprintln!("[export_video] FAILED: {}", e);
@@ -334,17 +389,193 @@ pub async fn preview_video(
 
 #[tauri::command]
 pub async fn ensure_ffmpeg() -> Result<String, String> {
-    // Check if FFmpeg is already available
-    let ffmpeg = ffmpeg_sidecar::paths::ffmpeg_path();
+    let ffmpeg = crate::ffmpeg_bin();
     if ffmpeg.exists() {
         return Ok(ffmpeg.to_string_lossy().to_string());
     }
-    // Auto-download FFmpeg on a blocking thread (it does synchronous HTTP)
-    tokio::task::spawn_blocking(|| {
-        ffmpeg_sidecar::download::auto_download()
+    // Download FFmpeg to our AppData/Local/ClipFlow/ directory
+    let download_dir = dirs::data_local_dir()
+        .ok_or("Cannot find local data directory")?
+        .join("ClipFlow");
+    std::fs::create_dir_all(&download_dir).map_err(|e| e.to_string())?;
+
+    let dest = download_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        let url = ffmpeg_sidecar::download::ffmpeg_download_url()
+            .map_err(|e| format!("Failed to get download URL: {}", e))?;
+        let archive = ffmpeg_sidecar::download::download_ffmpeg_package(url, &dest)
+            .map_err(|e| format!("Failed to download FFmpeg: {}", e))?;
+        ffmpeg_sidecar::download::unpack_ffmpeg(&archive, &dest)
+            .map_err(|e| format!("Failed to unpack FFmpeg: {}", e))?;
+        Ok::<(), String>(())
     })
     .await
     .map_err(|e| format!("FFmpeg download task failed: {}", e))?
-    .map_err(|e| format!("Failed to download FFmpeg: {}", e))?;
-    Ok(ffmpeg.to_string_lossy().to_string())
+    .map_err(|e| format!("FFmpeg download failed: {}", e))?;
+
+    let ffmpeg = crate::ffmpeg_bin();
+    if ffmpeg.exists() {
+        Ok(ffmpeg.to_string_lossy().to_string())
+    } else {
+        Err("FFmpeg downloaded but binary not found".into())
+    }
+}
+
+// Window snapping
+#[tauri::command]
+pub fn get_visible_windows() -> Result<Vec<WindowInfo>, String> {
+    crate::region::selector::enumerate_visible_windows()
+}
+
+// Countdown
+#[tauri::command]
+pub fn set_countdown(state: State<'_, Mutex<AppState>>, seconds: u32) -> Result<(), String> {
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    state.countdown_seconds = seconds;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_countdown(state: State<'_, Mutex<AppState>>) -> Result<u32, String> {
+    let state = state.lock().map_err(|e| e.to_string())?;
+    Ok(state.countdown_seconds)
+}
+
+// Annotations
+#[tauri::command]
+pub fn set_clip_annotations(
+    state: State<'_, Mutex<AppState>>,
+    clip_id: String,
+    annotations: Vec<Annotation>,
+) -> Result<(), String> {
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    state.annotations.insert(clip_id, annotations);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_clip_annotations(
+    state: State<'_, Mutex<AppState>>,
+    clip_id: String,
+) -> Result<Vec<Annotation>, String> {
+    let state = state.lock().map_err(|e| e.to_string())?;
+    Ok(state.annotations.get(&clip_id).cloned().unwrap_or_default())
+}
+
+// Subtitles
+#[tauri::command]
+pub fn set_subtitles(
+    state: State<'_, Mutex<AppState>>,
+    subtitles: Vec<Subtitle>,
+) -> Result<(), String> {
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    state.subtitles = subtitles;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_subtitles(state: State<'_, Mutex<AppState>>) -> Result<Vec<Subtitle>, String> {
+    let state = state.lock().map_err(|e| e.to_string())?;
+    Ok(state.subtitles.clone())
+}
+
+// Keystroke toggle
+#[tauri::command]
+pub fn toggle_keystroke_display(state: State<'_, Mutex<AppState>>) -> Result<bool, String> {
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    state.keystroke_enabled = !state.keystroke_enabled;
+    Ok(state.keystroke_enabled)
+}
+
+#[tauri::command]
+pub fn get_keystroke_enabled(state: State<'_, Mutex<AppState>>) -> Result<bool, String> {
+    let state = state.lock().map_err(|e| e.to_string())?;
+    Ok(state.keystroke_enabled)
+}
+
+// Cursor zoom toggle
+#[tauri::command]
+pub fn toggle_cursor_zoom(state: State<'_, Mutex<AppState>>) -> Result<bool, String> {
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    state.cursor_zoom_enabled = !state.cursor_zoom_enabled;
+    Ok(state.cursor_zoom_enabled)
+}
+
+#[tauri::command]
+pub fn get_cursor_zoom_enabled(state: State<'_, Mutex<AppState>>) -> Result<bool, String> {
+    let state = state.lock().map_err(|e| e.to_string())?;
+    Ok(state.cursor_zoom_enabled)
+}
+
+// Clipboard export
+#[tauri::command]
+pub fn copy_file_to_clipboard(path: String) -> Result<(), String> {
+    // Use arboard to copy file path to clipboard
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard.set_text(&path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// Project commands
+#[tauri::command]
+pub async fn save_project(
+    state: State<'_, Mutex<AppState>>,
+    name: String,
+) -> Result<String, String> {
+    let project_data = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        (
+            s.clips.clone(),
+            s.transitions.clone(),
+            s.audio_source,
+            s.annotations.clone(),
+            s.subtitles.clone(),
+            s.current_project_id.clone(),
+        )
+    };
+
+    let project_id = crate::project::save_project(
+        project_data.5,
+        &name,
+        &project_data.0,
+        &project_data.1,
+        project_data.2,
+        &project_data.3,
+        &project_data.4,
+    )?;
+
+    {
+        let mut s = state.lock().map_err(|e| e.to_string())?;
+        s.current_project_id = Some(project_id.clone());
+    }
+
+    Ok(project_id)
+}
+
+#[tauri::command]
+pub fn load_project(
+    state: State<'_, Mutex<AppState>>,
+    project_id: String,
+) -> Result<(), String> {
+    let project = crate::project::load_project(&project_id)?;
+
+    let mut s = state.lock().map_err(|e| e.to_string())?;
+    s.clips = project.clips;
+    s.transitions = project.transitions;
+    s.audio_source = project.settings.audio_source;
+    s.annotations = project.annotations;
+    s.subtitles = project.subtitles;
+    s.current_project_id = Some(project_id);
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_projects() -> Result<Vec<crate::types::ProjectSummary>, String> {
+    crate::project::list_projects()
+}
+
+#[tauri::command]
+pub fn delete_project(project_id: String) -> Result<(), String> {
+    crate::project::delete_project(&project_id)
 }

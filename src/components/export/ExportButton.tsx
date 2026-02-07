@@ -7,9 +7,11 @@ interface Props {
   exportProgress: number;
   exportFormat: ExportFormat;
   exportQuality: ExportQuality;
+  exportSuccess: string | null;
   onExport: () => void;
   onFormatChange: (format: ExportFormat) => void;
   onQualityChange: (quality: ExportQuality) => void;
+  onCopyToClipboard: (path: string) => void;
 }
 
 export function ExportButton({
@@ -18,11 +20,14 @@ export function ExportButton({
   exportProgress,
   exportFormat,
   exportQuality,
+  exportSuccess,
   onExport,
   onFormatChange,
   onQualityChange,
+  onCopyToClipboard,
 }: Props) {
   const [showSettings, setShowSettings] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (!showSettings) return;
@@ -32,6 +37,13 @@ export function ExportButton({
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
   }, [showSettings]);
+
+  useEffect(() => {
+    if (copied) {
+      const t = setTimeout(() => setCopied(false), 2000);
+      return () => clearTimeout(t);
+    }
+  }, [copied]);
 
   if (clipCount === 0) return null;
 
@@ -51,7 +63,7 @@ export function ExportButton({
   }
 
   return (
-    <div className="relative flex items-center gap-1">
+    <div className="relative flex items-center gap-1" data-onboarding-export>
       <button
         onClick={onExport}
         className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 rounded-l-lg text-sm font-semibold text-white transition-colors cursor-pointer"
@@ -68,6 +80,30 @@ export function ExportButton({
         </svg>
       </button>
 
+      {/* Copy to clipboard button after successful export */}
+      {exportSuccess && (
+        <button
+          onClick={() => {
+            onCopyToClipboard(exportSuccess);
+            setCopied(true);
+          }}
+          className="px-3 py-2.5 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5"
+          title="Copier le chemin dans le presse-papiers"
+        >
+          {copied ? (
+            <svg className="w-3.5 h-3.5 text-green-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          ) : (
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            </svg>
+          )}
+          {copied ? "Copié" : "Copier"}
+        </button>
+      )}
+
       {showSettings && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in"
@@ -75,7 +111,7 @@ export function ExportButton({
             if (e.target === e.currentTarget) setShowSettings(false);
           }}
         >
-          <div className="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-2xl shadow-2xl p-5 w-[300px] animate-fade-in">
+          <div className="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-2xl shadow-2xl p-5 w-full max-w-xs mx-4 animate-fade-in">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-200">
                 Paramètres d'export

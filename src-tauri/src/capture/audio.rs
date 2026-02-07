@@ -118,13 +118,6 @@ pub fn start_system_capture(
 }
 
 /// Start microphone capture writing to WAV, optionally using a specific device
-pub fn start_mic_capture(
-    output_path: &std::path::Path,
-    stop_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
-) -> Result<std::thread::JoinHandle<()>, String> {
-    start_mic_capture_device(output_path, stop_flag, None)
-}
-
 pub fn start_mic_capture_device(
     output_path: &std::path::Path,
     stop_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,

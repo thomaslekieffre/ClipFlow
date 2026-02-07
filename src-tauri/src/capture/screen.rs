@@ -8,12 +8,44 @@ fn ffmpeg_path() -> PathBuf {
     crate::ffmpeg_bin()
 }
 
+/// Clamp a region so it stays within the virtual desktop bounds for gdigrab.
+/// Negative coordinates (from window shadow borders) and overflow are trimmed.
+/// Width/height are forced to even values (required by libx264 yuv420p).
+fn clamp_region(region: &Region) -> Region {
+    let mut x = region.x;
+    let mut y = region.y;
+    let mut w = region.width as i32;
+    let mut h = region.height as i32;
+
+    // If origin is negative, shrink dimensions and clamp to 0
+    if x < 0 {
+        w += x; // reduce width by the overshoot
+        x = 0;
+    }
+    if y < 0 {
+        h += y;
+        y = 0;
+    }
+
+    // Ensure positive dimensions
+    if w < 2 { w = 2; }
+    if h < 2 { h = 2; }
+
+    // Force even dimensions for h264 yuv420p
+    let w = (w as u32) & !1;
+    let h = (h as u32) & !1;
+
+    Region { x, y, width: w, height: h }
+}
+
 /// Start screen capture of a region using FFmpeg's gdigrab
 pub fn start_capture(
     region: &Region,
     output_path: &PathBuf,
     framerate: u32,
 ) -> Result<Child> {
+    let region = clamp_region(region);
+
     let child = Command::new(ffmpeg_path())
         .args([
             "-f", "gdigrab",
@@ -99,6 +131,52 @@ pub async fn stop_capture(child: &mut Child) -> Result<()> {
         anyhow::bail!("FFmpeg capture failed (exit code {:?}): {}", status.code(), snippet);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clamp_region_normal() {
+        let r = clamp_region(&Region { x: 100, y: 200, width: 800, height: 600 });
+        assert_eq!(r, Region { x: 100, y: 200, width: 800, height: 600 });
+    }
+
+    #[test]
+    fn test_clamp_region_negative_y() {
+        // Window shadow: y=-8, height=1048 → y=0, height=1040
+        let r = clamp_region(&Region { x: 1912, y: -8, width: 1936, height: 1048 });
+        assert_eq!(r.x, 0.max(1912));
+        assert_eq!(r.y, 0);
+        assert_eq!(r.height, 1040);
+    }
+
+    #[test]
+    fn test_clamp_region_negative_x_and_y() {
+        let r = clamp_region(&Region { x: -10, y: -8, width: 1000, height: 800 });
+        assert_eq!(r.x, 0);
+        assert_eq!(r.y, 0);
+        assert_eq!(r.width, 990);
+        assert_eq!(r.height, 792);
+    }
+
+    #[test]
+    fn test_clamp_region_odd_dimensions() {
+        let r = clamp_region(&Region { x: 0, y: 0, width: 801, height: 601 });
+        assert_eq!(r.width, 800);
+        assert_eq!(r.height, 600);
+    }
+
+    #[test]
+    fn test_clamp_region_minimum_size() {
+        // Extremely negative: width would go to 0 or negative
+        let r = clamp_region(&Region { x: -500, y: -500, width: 100, height: 100 });
+        assert_eq!(r.x, 0);
+        assert_eq!(r.y, 0);
+        assert!(r.width >= 2);
+        assert!(r.height >= 2);
+    }
 }
 
 /// Generate a thumbnail from a video file (first frame)

@@ -9,6 +9,9 @@ Built with **Tauri v2** (Rust) + **React 19** + **FFmpeg**.
 ![FFmpeg](https://img.shields.io/badge/FFmpeg-sidecar-green)
 ![License](https://img.shields.io/badge/license-MIT-yellow)
 
+## Doc précise générée :
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/thomaslekieffre/ClipFlow)
+
 ## Features
 
 - **Region capture** — Select any screen area or record fullscreen, multi-monitor and HiDPI support

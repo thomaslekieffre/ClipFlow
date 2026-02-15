@@ -2,11 +2,7 @@ use crate::types::Region;
 use anyhow::Result;
 use std::path::PathBuf;
 use std::process::Stdio;
-use tokio::process::{Child, Command};
-
-fn ffmpeg_path() -> PathBuf {
-    crate::ffmpeg_bin()
-}
+use tokio::process::Child;
 
 /// Clamp a region so it stays within the virtual desktop bounds for gdigrab.
 /// Negative coordinates (from window shadow borders) and overflow are trimmed.
@@ -46,7 +42,7 @@ pub fn start_capture(
 ) -> Result<Child> {
     let region = clamp_region(region);
 
-    let child = Command::new(ffmpeg_path())
+    let child = crate::ffmpeg_command()
         .args([
             "-f", "gdigrab",
             "-framerate", &framerate.to_string(),
@@ -76,7 +72,7 @@ pub fn start_fullscreen_capture(
     output_path: &PathBuf,
     framerate: u32,
 ) -> Result<Child> {
-    let child = Command::new(ffmpeg_path())
+    let child = crate::ffmpeg_command()
         .args([
             "-f", "gdigrab",
             "-framerate", &framerate.to_string(),
@@ -181,7 +177,7 @@ mod tests {
 
 /// Generate a thumbnail from a video file (first frame)
 pub fn generate_thumbnail(video_path: &PathBuf, thumbnail_path: &PathBuf) -> Result<()> {
-    std::process::Command::new(ffmpeg_path())
+    crate::ffmpeg_command_sync()
         .args([
             "-i", &video_path.to_string_lossy(),
             "-vframes", "1",

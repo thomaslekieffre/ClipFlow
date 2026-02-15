@@ -7,15 +7,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
 use tauri::{AppHandle, Emitter};
 
 const TRANSITION_DURATION: f64 = 0.5;
 const CURSOR_ZOOM: f64 = 1.15;
-
-fn ffmpeg_path() -> PathBuf {
-    crate::ffmpeg_bin()
-}
 
 fn xfade_name(t: &TransitionType) -> &'static str {
     match t {
@@ -42,16 +37,11 @@ fn xfade_name(t: &TransitionType) -> &'static str {
     }
 }
 
-fn ffprobe_path() -> PathBuf {
-    crate::ffprobe_bin()
-}
-
 async fn probe_duration(path: &PathBuf) -> Result<f64> {
     if !path.exists() {
         anyhow::bail!("Clip file not found: {:?}", path);
     }
-    let ffprobe = ffprobe_path();
-    let output = Command::new(&ffprobe)
+    let output = crate::ffprobe_command()
         .args([
             "-v", "error",
             "-show_entries", "format=duration",
@@ -290,13 +280,33 @@ fn build_keystroke_filters(
 
     let events_to_use = if events.len() > 150 { &events[..150] } else { events };
 
+    // Group rapid keystrokes (within 80ms) into combos displayed together
+    let mut groups: Vec<(f64, String)> = Vec::new();
     for event in events_to_use {
         let t = event.timestamp_ms as f64 / 1000.0 - trim_offset + time_offset;
         if t < 0.0 { continue; }
-        let end_t = t + 1.5;
-        let escaped = escape_drawtext(&event.key_name);
+        let key = escape_drawtext(&event.key_name);
+        if let Some(last) = groups.last_mut() {
+            if (t - last.0) < 0.08 {
+                last.1.push_str("  ");
+                last.1.push_str(&key);
+                continue;
+            }
+        }
+        groups.push((t, key));
+    }
+
+    for (t, label) in &groups {
+        let end_t = t + 1.8;
+        // Modern style: larger font, semi-transparent dark pill, bottom-left, subtle shadow
         filters.push(format!(
-            "drawtext=text='{escaped}':fontsize=28:fontcolor=white:box=1:boxcolor=black@0.7:boxborderw=10:x=(w-tw)/2:y=h-60:enable='between(t\\,{t:.3}\\,{end_t:.3})'"
+            "drawtext=text='{label}'\
+            :fontsize=36\
+            :fontcolor=white\
+            :box=1:boxcolor=black@0.55:boxborderw=16\
+            :x=30:y=h-80\
+            :shadowcolor=black@0.4:shadowx=2:shadowy=2\
+            :enable='between(t\\,{t:.3}\\,{end_t:.3})'"
         ));
     }
     filters
@@ -619,10 +629,9 @@ pub async fn export_mp4(
     args.extend(["-shortest", "-y"].iter().map(|s| s.to_string()));
     args.push(output_path.to_string_lossy().to_string());
 
-    let ffmpeg = ffmpeg_path();
     eprintln!("[export] Output: {:?}", output_path);
 
-    let mut child = Command::new(&ffmpeg)
+    let mut child = crate::ffmpeg_command()
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -760,8 +769,8 @@ async fn export_with_concat(
     args.extend(["-shortest", "-y"].iter().map(|s| s.to_string()));
     args.push(output_path.to_string_lossy().to_string());
 
-    let ffmpeg = ffmpeg_path();
-    let output = Command::new(&ffmpeg)
+
+    let output = crate::ffmpeg_command()
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -792,7 +801,7 @@ async fn export_single_clip(
     clip_cursor_positions: &HashMap<String, Vec<CursorPosition>>,
 ) -> Result<()> {
     let _ = app.emit("export-progress", 10u32);
-    let ffmpeg = ffmpeg_path();
+
     let has_audio = !clip.audio_paths.is_empty();
 
     let mut cmd_args: Vec<String> = Vec::new();
@@ -894,7 +903,7 @@ async fn export_single_clip(
     cmd_args.extend(["-shortest", "-y"].iter().map(|s| s.to_string()));
     cmd_args.push(output_path.to_string_lossy().to_string());
 
-    let output = Command::new(&ffmpeg)
+    let output = crate::ffmpeg_command()
         .args(&cmd_args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -950,11 +959,11 @@ pub async fn export_gif(
     let max_width = match quality { ExportQuality::High => 640, ExportQuality::Medium => 480, ExportQuality::Low => 320 };
 
     let palette_path = output_path.with_extension("palette.png");
-    let ffmpeg = ffmpeg_path();
+
 
     // Pass 1: palette
     let pf = format!("fps={fps},scale={max_width}:-1:flags=lanczos,palettegen=stats_mode=diff");
-    let output = Command::new(&ffmpeg)
+    let output = crate::ffmpeg_command()
         .args(["-i", &temp_mp4.to_string_lossy(), "-vf", &pf, "-y", &palette_path.to_string_lossy()])
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())
         .output().await.context("Failed to generate GIF palette")?;
@@ -966,7 +975,7 @@ pub async fn export_gif(
 
     // Pass 2: GIF
     let gf = format!("fps={fps},scale={max_width}:-1:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=5");
-    let output = Command::new(&ffmpeg)
+    let output = crate::ffmpeg_command()
         .args(["-i", &temp_mp4.to_string_lossy(), "-i", &palette_path.to_string_lossy(), "-filter_complex", &gf, "-y", &output_path.to_string_lossy()])
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())
         .output().await.context("Failed to generate GIF")?;
@@ -1032,8 +1041,8 @@ pub async fn preview_mp4(
     args.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-pix_fmt", "yuv420p", "-r", "24", "-an", "-y"].iter().map(|s| s.to_string()));
     args.push(output_path.to_string_lossy().to_string());
 
-    let ffmpeg = ffmpeg_path();
-    let mut child = Command::new(&ffmpeg)
+
+    let mut child = crate::ffmpeg_command()
         .args(&args)
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())
         .spawn().context("Failed to start FFmpeg preview")?;
@@ -1065,7 +1074,7 @@ pub async fn preview_mp4(
 
 async fn preview_single_clip(clip: &Clip, output_path: &PathBuf, app: &AppHandle) -> Result<()> {
     let _ = app.emit("preview-progress", 10u32);
-    let ffmpeg = ffmpeg_path();
+
     let prev_w = ((clip.region.width / 2) / 2 * 2).max(320);
     let prev_h = ((clip.region.height / 2) / 2 * 2).max(240);
 
@@ -1085,7 +1094,7 @@ async fn preview_single_clip(clip: &Clip, output_path: &PathBuf, app: &AppHandle
     cmd_args.extend(["-vf", &scale, "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-pix_fmt", "yuv420p", "-r", "24", "-an", "-y"].iter().map(|s| s.to_string()));
     cmd_args.push(output_path.to_string_lossy().to_string());
 
-    let output = Command::new(&ffmpeg)
+    let output = crate::ffmpeg_command()
         .args(&cmd_args)
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())
         .output().await.context("Failed to preview single clip")?;

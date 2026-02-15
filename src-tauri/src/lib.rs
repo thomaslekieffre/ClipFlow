@@ -13,6 +13,10 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::Manager;
 
+/// Windows flag to prevent spawning a visible console window.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 /// Return the path to FFmpeg, checking our AppData location first,
 /// then the sidecar location, then PATH fallback.
 pub fn ffmpeg_bin() -> PathBuf {
@@ -31,6 +35,33 @@ pub fn ffmpeg_bin() -> PathBuf {
 pub fn ffprobe_bin() -> PathBuf {
     let name = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
     ffmpeg_bin().with_file_name(name)
+}
+
+/// Create an async FFmpeg command with hidden console window on Windows.
+pub fn ffmpeg_command() -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(ffmpeg_bin());
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+/// Create a sync FFmpeg command with hidden console window on Windows.
+pub fn ffmpeg_command_sync() -> std::process::Command {
+    let mut cmd = std::process::Command::new(ffmpeg_bin());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
+/// Create an async FFprobe command with hidden console window on Windows.
+pub fn ffprobe_command() -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(ffprobe_bin());
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

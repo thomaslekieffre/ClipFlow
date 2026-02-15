@@ -6,7 +6,6 @@ use std::process::Stdio;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use std::time::Instant;
-use tokio::process::Command;
 
 const FRAMERATE: u32 = 30;
 
@@ -413,8 +412,7 @@ async fn concat_segments(segments: &[PathBuf], output: &PathBuf) -> Result<(), S
     }
     std::fs::write(&list_path, &list_content).map_err(|e| e.to_string())?;
 
-    let ffmpeg = crate::ffmpeg_bin();
-    let result = Command::new(&ffmpeg)
+    let result = crate::ffmpeg_command()
         .args([
             "-f", "concat",
             "-safe", "0",

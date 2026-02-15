@@ -8,6 +8,10 @@ interface Props {
   selectedMic: string | null;
   onMicChange: (deviceName: string | null) => void;
   disabled?: boolean;
+  systemVolume: number;
+  micVolume: number;
+  onSystemVolumeChange: (volume: number) => void;
+  onMicVolumeChange: (volume: number) => void;
 }
 
 const sources: { value: AudioSource; label: string; icon: string }[] = [
@@ -17,7 +21,7 @@ const sources: { value: AudioSource; label: string; icon: string }[] = [
   { value: "both", label: "Les deux", icon: "+" },
 ];
 
-export function AudioSourceSelector({ audioSource, onChange, selectedMic, onMicChange, disabled }: Props) {
+export function AudioSourceSelector({ audioSource, onChange, selectedMic, onMicChange, disabled, systemVolume, micVolume, onSystemVolumeChange, onMicVolumeChange }: Props) {
   const [micDevices, setMicDevices] = useState<AudioDevice[]>([]);
   const showMicSelect = audioSource === "microphone" || audioSource === "both";
 
@@ -87,6 +91,43 @@ export function AudioSourceSelector({ audioSource, onChange, selectedMic, onMicC
             </option>
           ))}
         </select>
+      )}
+      {/* Volume sliders */}
+      {audioSource !== "none" && (
+        <div className="flex items-center gap-2 ml-1">
+          {(audioSource === "system" || audioSource === "both") && (
+            <label className="flex items-center gap-1 text-[9px] text-zinc-400 dark:text-zinc-500">
+              <span>Sys</span>
+              <input
+                type="range"
+                min="0"
+                max="2"
+                step="0.05"
+                value={systemVolume}
+                onChange={(e) => onSystemVolumeChange(parseFloat(e.target.value))}
+                disabled={disabled}
+                className="w-14 h-1 bg-zinc-200 dark:bg-zinc-700 rounded-full appearance-none cursor-pointer accent-blue-500"
+              />
+              <span className="font-mono w-7 text-right">{Math.round(systemVolume * 100)}%</span>
+            </label>
+          )}
+          {(audioSource === "microphone" || audioSource === "both") && (
+            <label className="flex items-center gap-1 text-[9px] text-zinc-400 dark:text-zinc-500">
+              <span>Mic</span>
+              <input
+                type="range"
+                min="0"
+                max="2"
+                step="0.05"
+                value={micVolume}
+                onChange={(e) => onMicVolumeChange(parseFloat(e.target.value))}
+                disabled={disabled}
+                className="w-14 h-1 bg-zinc-200 dark:bg-zinc-700 rounded-full appearance-none cursor-pointer accent-blue-500"
+              />
+              <span className="font-mono w-7 text-right">{Math.round(micVolume * 100)}%</span>
+            </label>
+          )}
+        </div>
       )}
     </div>
   );

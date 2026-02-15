@@ -6,14 +6,15 @@ use std::process::Stdio;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use std::time::Instant;
+use tauri::AppHandle;
 
 const FRAMERATE: u32 = 30;
 
-pub fn start(state: &Mutex<AppState>) -> Result<(), String> {
+pub fn start(state: &Mutex<AppState>, app: &AppHandle) -> Result<(), String> {
     let mut s = state.lock().map_err(|e| e.to_string())?;
 
     if s.recording_state != RecordingState::Idle {
-        return Err("Already recording".into());
+        return Err("Enregistrement déjà en cours".into());
     }
 
     // Ensure temp dir exists
@@ -43,9 +44,9 @@ pub fn start(state: &Mutex<AppState>) -> Result<(), String> {
     // Start audio capture
     start_audio_captures(&mut s, &clip_id);
 
-    // Start keystroke capture
+    // Start keystroke capture (with live emission if enabled)
     if s.keystroke_enabled {
-        match crate::capture::keystroke::start_capture(start_time) {
+        match crate::capture::keystroke::start_capture_with_emitter(start_time, app.clone()) {
             Ok(handle) => s.keystroke_handle = Some(handle),
             Err(e) => eprintln!("[recording] Failed to start keystroke capture: {}", e),
         }
@@ -117,15 +118,15 @@ pub async fn pause(state: &Mutex<AppState>) -> Result<(), String> {
         let mut s = state.lock().map_err(|e| e.to_string())?;
 
         if s.recording_state != RecordingState::Recording {
-            return Err("Not recording".into());
+            return Err("Pas d'enregistrement en cours".into());
         }
 
         let child = s.ffmpeg_process.take()
-            .ok_or("No FFmpeg process")?;
+            .ok_or("Processus FFmpeg introuvable")?;
         let start_time = s.recording_start.take()
-            .ok_or("No recording start time")?;
+            .ok_or("Heure de début introuvable")?;
         let segment_path = s.current_clip_path.clone()
-            .ok_or("No clip path")?;
+            .ok_or("Chemin du clip introuvable")?;
         let audio_handles = std::mem::take(&mut s.audio_handles);
 
         s.recording_state = RecordingState::Paused;
@@ -155,7 +156,7 @@ pub fn resume(state: &Mutex<AppState>) -> Result<(), String> {
     let mut s = state.lock().map_err(|e| e.to_string())?;
 
     if s.recording_state != RecordingState::Paused {
-        return Err("Not paused".into());
+        return Err("L'enregistrement n'est pas en pause".into());
     }
 
     // Create a new segment file
@@ -197,13 +198,13 @@ pub async fn stop(state: &Mutex<AppState>) -> Result<Clip, String> {
         let mut s = state.lock().map_err(|e| e.to_string())?;
 
         if s.recording_state != RecordingState::Recording && s.recording_state != RecordingState::Paused {
-            return Err("Not recording".into());
+            return Err("Pas d'enregistrement en cours".into());
         }
 
         let child = s.ffmpeg_process.take();
         let start_time = s.recording_start.take();
         let clip_path = s.current_clip_path.take()
-            .ok_or("No clip path")?;
+            .ok_or("Chemin du clip introuvable")?;
 
         // Mark idle immediately to prevent concurrent stop attempts
         s.recording_state = RecordingState::Idle;
@@ -395,7 +396,7 @@ pub fn cancel(state: &Mutex<AppState>) -> Result<(), String> {
 /// Concatenate multiple video segments using FFmpeg concat demuxer
 async fn concat_segments(segments: &[PathBuf], output: &PathBuf) -> Result<(), String> {
     if segments.is_empty() {
-        return Err("No segments to concatenate".into());
+        return Err("Aucun segment à concaténer".into());
     }
     if segments.len() == 1 {
         std::fs::copy(&segments[0], output).map_err(|e| e.to_string())?;
@@ -432,7 +433,7 @@ async fn concat_segments(segments: &[PathBuf], output: &PathBuf) -> Result<(), S
 
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
-        return Err(format!("Concat failed: {}", stderr.chars().take(500).collect::<String>()));
+        return Err(format!("Échec de la concaténation : {}", stderr.chars().take(500).collect::<String>()));
     }
 
     Ok(())

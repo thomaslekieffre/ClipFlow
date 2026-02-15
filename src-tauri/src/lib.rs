@@ -135,6 +135,8 @@ pub fn run() {
             commands::set_audio_source,
             commands::get_audio_source,
             commands::get_audio_devices,
+            commands::set_audio_volumes,
+            commands::get_audio_volumes,
             commands::get_clips,
             commands::reorder_clips,
             commands::delete_clip,

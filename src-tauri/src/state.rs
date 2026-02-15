@@ -35,6 +35,9 @@ pub struct AppState {
     // Annotations & Subtitles
     pub annotations: HashMap<String, Vec<crate::types::Annotation>>,
     pub subtitles: Vec<crate::types::Subtitle>,
+    // Audio volume
+    pub system_volume: f32,
+    pub mic_volume: f32,
     // Project
     pub current_project_id: Option<String>,
 }
@@ -76,6 +79,8 @@ impl Default for AppState {
             clip_cursor_positions: HashMap::new(),
             annotations: HashMap::new(),
             subtitles: Vec::new(),
+            system_volume: 1.0,
+            mic_volume: 1.0,
             current_project_id: None,
         }
     }

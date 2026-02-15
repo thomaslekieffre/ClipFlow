@@ -102,6 +102,74 @@ pub fn start_capture(start_time: Instant) -> Result<KeystrokeCaptureHandle, Stri
     })
 }
 
+/// Start capturing keystrokes with live event emission to the frontend.
+/// Emits `keystroke-live` events via the AppHandle for real-time display.
+pub fn start_capture_with_emitter(
+    start_time: Instant,
+    app_handle: tauri::AppHandle,
+) -> Result<KeystrokeCaptureHandle, String> {
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let events = Arc::new(Mutex::new(Vec::new()));
+
+    let stop = stop_flag.clone();
+    let evts = events.clone();
+
+    let handle = std::thread::spawn(move || {
+        use tauri::Emitter;
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+
+        let mut prev_states = [false; 256];
+        let mut last_emit = Instant::now();
+
+        let get_pressed = |vk: u32| -> bool {
+            let state = unsafe { GetAsyncKeyState(vk as i32) };
+            (state & (0x8000u16 as i16)) != 0
+        };
+
+        while !stop.load(Ordering::Relaxed) {
+            for vk in 0u32..256 {
+                let pressed = get_pressed(vk);
+                let was_pressed = prev_states[vk as usize];
+
+                if pressed && !was_pressed {
+                    if is_modifier(vk) {
+                        prev_states[vk as usize] = pressed;
+                        continue;
+                    }
+
+                    let base_name = vk_to_name(vk);
+                    if base_name.is_empty() {
+                        prev_states[vk as usize] = pressed;
+                        continue;
+                    }
+
+                    let prefix = modifier_prefix(&get_pressed);
+                    let key_name = format!("{}{}", prefix, base_name);
+
+                    let timestamp_ms = start_time.elapsed().as_millis() as u64;
+                    if let Ok(mut e) = evts.lock() {
+                        e.push(KeystrokeEvent { timestamp_ms, key_name: key_name.clone() });
+                    }
+
+                    // Throttle live emission to max every 50ms
+                    if last_emit.elapsed().as_millis() >= 50 {
+                        let _ = app_handle.emit("keystroke-live", &key_name);
+                        last_emit = Instant::now();
+                    }
+                }
+                prev_states[vk as usize] = pressed;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+    });
+
+    Ok(KeystrokeCaptureHandle {
+        stop_flag,
+        events,
+        join_handle: Some(handle),
+    })
+}
+
 /// Stop capturing and return collected events
 pub fn stop_capture(handle: &mut KeystrokeCaptureHandle) -> Vec<KeystrokeEvent> {
     handle.stop_flag.store(true, Ordering::Relaxed);

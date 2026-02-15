@@ -74,7 +74,7 @@ export function Timeline() {
                 {index < clips.length - 1 && (
                   <TransitionIcon
                     transition={transitions[index]}
-                    onChange={(type) => setTransition(index, type)}
+                    onChange={(type, durationS) => setTransition(index, type, durationS)}
                   />
                 )}
               </div>

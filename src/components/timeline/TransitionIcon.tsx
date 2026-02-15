@@ -3,7 +3,7 @@ import type { Transition, TransitionType } from "../../lib/types";
 
 interface Props {
   transition: Transition | undefined;
-  onChange: (type: TransitionType) => void;
+  onChange: (type: TransitionType, durationS?: number) => void;
 }
 
 interface TransitionInfo {
@@ -57,6 +57,13 @@ const GROUPS = TRANSITIONS.reduce<Record<string, TransitionInfo[]>>(
 export function TransitionIcon({ transition, onChange }: Props) {
   const [open, setOpen] = useState(false);
   const currentType = transition?.transition_type ?? "fade";
+  const currentDuration = transition?.duration_s ?? 0.5;
+  const [localDuration, setLocalDuration] = useState(currentDuration);
+
+  // Sync local duration when transition changes externally
+  useEffect(() => {
+    setLocalDuration(transition?.duration_s ?? 0.5);
+  }, [transition?.duration_s]);
 
   // Close on Escape
   useEffect(() => {
@@ -116,7 +123,7 @@ export function TransitionIcon({ transition, onChange }: Props) {
                     <button
                       key={t.type}
                       onClick={() => {
-                        onChange(t.type);
+                        onChange(t.type, localDuration);
                         setOpen(false);
                       }}
                       className={`flex flex-col items-center gap-1 px-1.5 py-2 rounded-xl text-xs transition-all hover:scale-105 cursor-pointer ${
@@ -134,6 +141,37 @@ export function TransitionIcon({ transition, onChange }: Props) {
                 </div>
               </div>
             ))}
+
+            {/* Duration slider */}
+            {currentType !== "cut" && (
+              <div className="mt-4 pt-3 border-t border-zinc-200 dark:border-zinc-700">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[10px] uppercase tracking-wider text-zinc-400 dark:text-zinc-500 font-semibold">
+                    Durée
+                  </span>
+                  <span className="text-xs font-mono text-zinc-600 dark:text-zinc-300">
+                    {localDuration.toFixed(1)}s
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0.2"
+                  max="2.0"
+                  step="0.1"
+                  value={localDuration}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    setLocalDuration(val);
+                    onChange(currentType, val);
+                  }}
+                  className="w-full h-1.5 bg-zinc-200 dark:bg-zinc-700 rounded-full appearance-none cursor-pointer accent-blue-500"
+                />
+                <div className="flex justify-between text-[9px] text-zinc-400 dark:text-zinc-600 mt-1">
+                  <span>0.2s</span>
+                  <span>2.0s</span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

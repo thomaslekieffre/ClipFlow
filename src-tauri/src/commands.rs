@@ -65,6 +65,24 @@ pub fn get_selected_mic(state: State<'_, Mutex<AppState>>) -> Result<Option<Stri
 }
 
 #[tauri::command]
+pub fn set_audio_volumes(
+    state: State<'_, Mutex<AppState>>,
+    system_volume: f32,
+    mic_volume: f32,
+) -> Result<(), String> {
+    let mut state = state.lock().map_err(|e| e.to_string())?;
+    state.system_volume = system_volume.clamp(0.0, 2.0);
+    state.mic_volume = mic_volume.clamp(0.0, 2.0);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_audio_volumes(state: State<'_, Mutex<AppState>>) -> Result<(f32, f32), String> {
+    let state = state.lock().map_err(|e| e.to_string())?;
+    Ok((state.system_volume, state.mic_volume))
+}
+
+#[tauri::command]
 pub fn get_clips(state: State<'_, Mutex<AppState>>) -> Result<Vec<Clip>, String> {
     let state = state.lock().map_err(|e| e.to_string())?;
     Ok(state.clips.clone())
@@ -119,12 +137,16 @@ pub fn set_transition(
     state: State<'_, Mutex<AppState>>,
     index: usize,
     transition_type: TransitionType,
+    duration_s: Option<f64>,
 ) -> Result<(), String> {
     let mut state = state.lock().map_err(|e| e.to_string())?;
     if index >= state.transitions.len() {
         return Err(format!("Transition index {} out of bounds", index));
     }
     state.transitions[index].transition_type = transition_type;
+    if let Some(dur) = duration_s {
+        state.transitions[index].duration_s = dur.clamp(0.1, 5.0);
+    }
     Ok(())
 }
 
@@ -156,8 +178,8 @@ pub fn set_clip_trim(
 }
 
 #[tauri::command]
-pub fn start_recording(state: State<'_, Mutex<AppState>>) -> Result<(), String> {
-    manager::start(&state)
+pub fn start_recording(state: State<'_, Mutex<AppState>>, app: AppHandle) -> Result<(), String> {
+    manager::start(&state, &app)
 }
 
 #[tauri::command]
@@ -305,13 +327,13 @@ pub async fn export_video(
     format: ExportFormat,
     quality: ExportQuality,
 ) -> Result<String, String> {
-    let (clips, transitions, clip_keystrokes, subtitles, clip_annotations, clip_cursor_positions) = {
+    let (clips, transitions, clip_keystrokes, subtitles, clip_annotations, clip_cursor_positions, system_volume, mic_volume) = {
         let s = state.lock().map_err(|e| e.to_string())?;
-        (s.clips.clone(), s.transitions.clone(), s.clip_keystrokes.clone(), s.subtitles.clone(), s.annotations.clone(), s.clip_cursor_positions.clone())
+        (s.clips.clone(), s.transitions.clone(), s.clip_keystrokes.clone(), s.subtitles.clone(), s.annotations.clone(), s.clip_cursor_positions.clone(), s.system_volume, s.mic_volume)
     };
 
     if clips.is_empty() {
-        return Err("No clips to export".into());
+        return Err("Aucun clip à exporter".into());
     }
 
     eprintln!("[export_video] {} clips, {} transitions, watermark={}, format={:?}, quality={:?}", clips.len(), transitions.len(), watermark, format, quality);
@@ -337,19 +359,19 @@ pub async fn export_video(
     // Run export
     match format {
         ExportFormat::Mp4 => {
-            crate::export::encoder::export_mp4(&clips, &transitions, &output_path, &app, watermark, &quality, &clip_keystrokes, &subtitles, &clip_annotations, &clip_cursor_positions)
+            crate::export::encoder::export_mp4(&clips, &transitions, &output_path, &app, watermark, &quality, &clip_keystrokes, &subtitles, &clip_annotations, &clip_cursor_positions, system_volume, mic_volume)
                 .await
                 .map_err(|e| {
                     eprintln!("[export_video] FAILED: {}", e);
-                    format!("Export failed: {}", e)
+                    format!("Export échoué : {}", e)
                 })?;
         }
         ExportFormat::Gif => {
-            crate::export::encoder::export_gif(&clips, &transitions, &output_path, &app, watermark, &quality, &clip_keystrokes, &subtitles, &clip_annotations, &clip_cursor_positions)
+            crate::export::encoder::export_gif(&clips, &transitions, &output_path, &app, watermark, &quality, &clip_keystrokes, &subtitles, &clip_annotations, &clip_cursor_positions, system_volume, mic_volume)
                 .await
                 .map_err(|e| {
                     eprintln!("[export_video] FAILED: {}", e);
-                    format!("Export failed: {}", e)
+                    format!("Export échoué : {}", e)
                 })?;
         }
     }
@@ -374,13 +396,13 @@ pub async fn preview_video(
     state: State<'_, Mutex<AppState>>,
     app: AppHandle,
 ) -> Result<String, String> {
-    let (clips, transitions) = {
+    let (clips, transitions, clip_keystrokes, subtitles, clip_annotations, clip_cursor_positions) = {
         let s = state.lock().map_err(|e| e.to_string())?;
-        (s.clips.clone(), s.transitions.clone())
+        (s.clips.clone(), s.transitions.clone(), s.clip_keystrokes.clone(), s.subtitles.clone(), s.annotations.clone(), s.clip_cursor_positions.clone())
     };
 
     if clips.is_empty() {
-        return Err("No clips to preview".into());
+        return Err("Aucun clip à prévisualiser".into());
     }
 
     // Use temp directory for preview
@@ -390,11 +412,14 @@ pub async fn preview_video(
 
     eprintln!("[preview_video] {} clips, output: {:?}", clips.len(), preview_path);
 
-    crate::export::encoder::preview_mp4(&clips, &transitions, &preview_path, &app)
+    crate::export::encoder::preview_mp4(
+        &clips, &transitions, &preview_path, &app,
+        &clip_keystrokes, &subtitles, &clip_annotations, &clip_cursor_positions,
+    )
         .await
         .map_err(|e| {
             eprintln!("[preview_video] FAILED: {}", e);
-            format!("Preview failed: {}", e)
+            format!("Prévisualisation échouée : {}", e)
         })?;
 
     Ok(preview_path.to_string_lossy().to_string())

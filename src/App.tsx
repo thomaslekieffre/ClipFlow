@@ -17,6 +17,49 @@ import { Logo } from "./components/Logo";
 import type { Region } from "./lib/types";
 import * as api from "./lib/tauri";
 
+function LiveKeystrokeOverlay() {
+  const [keys, setKeys] = useState<{ id: number; key: string; time: number }[]>([]);
+  const nextId = useRef(0);
+
+  useEffect(() => {
+    const unlisten = listen<string>("keystroke-live", (event) => {
+      const id = nextId.current++;
+      setKeys((prev) => [...prev.slice(-2), { id, key: event.payload, time: Date.now() }]);
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, []);
+
+  // Auto-remove keys after 1.8s
+  useEffect(() => {
+    if (keys.length === 0) return;
+    const timer = setInterval(() => {
+      const now = Date.now();
+      setKeys((prev) => prev.filter((k) => now - k.time < 1800));
+    }, 200);
+    return () => clearInterval(timer);
+  }, [keys.length > 0]);
+
+  if (keys.length === 0) return null;
+
+  return (
+    <div className="fixed bottom-6 left-6 z-[100] flex flex-col gap-1.5 pointer-events-none">
+      {keys.map((k) => {
+        const age = (Date.now() - k.time) / 1800;
+        const opacity = Math.max(0, 1 - age);
+        return (
+          <div
+            key={k.id}
+            className="px-4 py-2 rounded-full bg-black/55 text-white text-sm font-mono shadow-lg backdrop-blur-sm"
+            style={{ opacity, transition: "opacity 0.3s" }}
+          >
+            {k.key}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function App() {
   const {
     theme,
@@ -81,6 +124,10 @@ function App() {
     showOnboarding,
     selectedMic,
     setSelectedMic,
+    systemVolume,
+    micVolume,
+    setSystemVolume,
+    setMicVolume,
   } = useAppStore();
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -435,6 +482,10 @@ function App() {
                 selectedMic={selectedMic}
                 onMicChange={setSelectedMic}
                 disabled={recordingState !== "idle"}
+                systemVolume={systemVolume}
+                micVolume={micVolume}
+                onSystemVolumeChange={setSystemVolume}
+                onMicVolumeChange={setMicVolume}
               />
             )}
 
@@ -593,6 +644,11 @@ function App() {
           </div>
         </div>
       </div>
+
+      {/* Live Keystroke Overlay */}
+      {keystrokeEnabled && (recordingState === "recording" || recordingState === "paused") && (
+        <LiveKeystrokeOverlay />
+      )}
 
       {/* Video Preview Modal */}
       {previewPath && (

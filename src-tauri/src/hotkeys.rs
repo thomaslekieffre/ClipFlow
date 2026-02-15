@@ -30,7 +30,7 @@ fn handle_f9(app: &tauri::AppHandle) {
 
     match current_state {
         RecordingState::Idle => {
-            if let Err(e) = manager::start(&state) {
+            if let Err(e) = manager::start(&state, app) {
                 eprintln!("[hotkey] Start recording failed: {}", e);
             } else {
                 eprintln!("[hotkey] Recording started via F9");

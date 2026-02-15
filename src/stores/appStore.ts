@@ -49,6 +49,9 @@ interface AppStore {
   currentProjectId: string | null;
   // Mic selection
   selectedMic: string | null;
+  // Audio volumes
+  systemVolume: number;
+  micVolume: number;
   // Onboarding
   onboardingStep: number | null;
 
@@ -61,7 +64,7 @@ interface AppStore {
   cancelRecording: () => Promise<void>;
   setAudioSource: (source: AudioSource) => Promise<void>;
   deleteClip: (clipId: string) => Promise<void>;
-  setTransition: (index: number, type_: TransitionType) => Promise<void>;
+  setTransition: (index: number, type_: TransitionType, durationS?: number) => Promise<void>;
   setAllTransitions: (type_: TransitionType) => Promise<void>;
   reorderClips: (clipIds: string[]) => Promise<void>;
   setCaptureRegion: (region: Region) => Promise<void>;
@@ -97,6 +100,9 @@ interface AppStore {
   deleteProject: (projectId: string) => Promise<void>;
   // Mic selection
   setSelectedMic: (deviceName: string | null) => Promise<void>;
+  // Audio volumes
+  setSystemVolume: (volume: number) => Promise<void>;
+  setMicVolume: (volume: number) => Promise<void>;
   // Onboarding
   showOnboarding: () => void;
   nextOnboardingStep: () => void;
@@ -166,6 +172,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
   keystrokeEnabled: false,
   cursorZoomEnabled: false,
   selectedMic: null,
+  systemVolume: (() => {
+    try {
+      const saved = localStorage.getItem("clipflow-system-volume");
+      if (saved) { const n = parseFloat(saved); if (!isNaN(n)) return n; }
+    } catch {}
+    return 1.0;
+  })(),
+  micVolume: (() => {
+    try {
+      const saved = localStorage.getItem("clipflow-mic-volume");
+      if (saved) { const n = parseFloat(saved); if (!isNaN(n)) return n; }
+    } catch {}
+    return 1.0;
+  })(),
   projects: [],
   currentProjectId: null,
   onboardingStep: (() => {
@@ -182,6 +202,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
       api.getTransitions(),
     ]);
     set({ recordingState, clips, transitions });
+    // Sync audio volumes from local storage to backend
+    const { systemVolume, micVolume } = get();
+    api.setAudioVolumes(systemVolume, micVolume).catch(() => {});
   },
 
   startRecording: async () => {
@@ -235,8 +258,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ clips, transitions });
   },
 
-  setTransition: async (index: number, type_: TransitionType) => {
-    await api.setTransition(index, type_);
+  setTransition: async (index: number, type_: TransitionType, durationS?: number) => {
+    await api.setTransition(index, type_, durationS);
     const transitions = await api.getTransitions();
     set({ transitions });
   },
@@ -412,6 +435,20 @@ export const useAppStore = create<AppStore>((set, get) => ({
   setSelectedMic: async (deviceName: string | null) => {
     await api.setSelectedMic(deviceName);
     set({ selectedMic: deviceName });
+  },
+
+  setSystemVolume: async (volume: number) => {
+    const clamped = Math.max(0, Math.min(2, volume));
+    localStorage.setItem("clipflow-system-volume", String(clamped));
+    set({ systemVolume: clamped });
+    await api.setAudioVolumes(clamped, get().micVolume);
+  },
+
+  setMicVolume: async (volume: number) => {
+    const clamped = Math.max(0, Math.min(2, volume));
+    localStorage.setItem("clipflow-mic-volume", String(clamped));
+    set({ micVolume: clamped });
+    await api.setAudioVolumes(get().systemVolume, clamped);
   },
 
   showOnboarding: () => {

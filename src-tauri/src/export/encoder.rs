@@ -9,8 +9,37 @@ use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tauri::{AppHandle, Emitter};
 
-const TRANSITION_DURATION: f64 = 0.5;
+const DEFAULT_TRANSITION_DURATION: f64 = 0.5;
 const CURSOR_ZOOM: f64 = 1.15;
+
+/// Translate common FFmpeg error messages to French for user-friendly display.
+fn translate_ffmpeg_error(stderr: &str) -> String {
+    let lower = stderr.to_lowercase();
+    if lower.contains("no such file") || lower.contains("does not exist") {
+        return "Fichier introuvable".to_string();
+    }
+    if lower.contains("invalid data") || lower.contains("corrupt") {
+        return "Données corrompues".to_string();
+    }
+    if lower.contains("permission denied") || lower.contains("access is denied") {
+        return "Accès refusé au fichier".to_string();
+    }
+    if lower.contains("not enough frames") || lower.contains("too few frames") {
+        return "Clip trop court pour la transition demandée".to_string();
+    }
+    if lower.contains("no space left") || lower.contains("disk full") {
+        return "Espace disque insuffisant".to_string();
+    }
+    if lower.contains("codec not found") || lower.contains("unknown encoder") || lower.contains("encoder") && lower.contains("not found") {
+        return "Codec vidéo introuvable — vérifiez votre installation FFmpeg".to_string();
+    }
+    if lower.contains("invalid argument") {
+        return "Paramètre FFmpeg invalide".to_string();
+    }
+    // Fallback: first 200 chars
+    let truncated: String = stderr.chars().take(200).collect();
+    format!("Erreur FFmpeg : {}", truncated)
+}
 
 fn xfade_name(t: &TransitionType) -> &'static str {
     match t {
@@ -39,7 +68,7 @@ fn xfade_name(t: &TransitionType) -> &'static str {
 
 async fn probe_duration(path: &PathBuf) -> Result<f64> {
     if !path.exists() {
-        anyhow::bail!("Clip file not found: {:?}", path);
+        anyhow::bail!("Fichier de clip introuvable : {:?}", path);
     }
     let output = crate::ffprobe_command()
         .args([
@@ -340,6 +369,8 @@ fn build_subtitle_filters(subtitles: &[Subtitle]) -> Vec<String> {
 fn build_audio_concat_filter(
     audio_input_map: &[(usize, Vec<usize>)],
     eff_durations: &[f64],
+    system_volume: f32,
+    mic_volume: f32,
 ) -> String {
     let mut filters = Vec::new();
     let mut has_any = false;
@@ -352,10 +383,29 @@ fn build_audio_concat_filter(
                 "anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration={dur:.3}[a{ci}]"
             ));
         } else if indices.len() == 1 {
-            filters.push(format!("[{}:a]anull[a{ci}]", indices[0]));
+            // Single audio source — apply appropriate volume
+            // First audio track is usually system, second is mic
+            let vol = if ci == 0 || indices[0] % 2 == 1 { system_volume } else { mic_volume };
+            if (vol - 1.0).abs() > 0.01 {
+                filters.push(format!("[{}:a]volume={:.2}[a{ci}]", indices[0], vol));
+            } else {
+                filters.push(format!("[{}:a]anull[a{ci}]", indices[0]));
+            }
             has_any = true;
         } else {
-            let mix_inputs: String = indices.iter().map(|idx| format!("[{}:a]", idx)).collect();
+            // Multiple audio sources (system + mic) — apply per-source volume before mixing
+            let mut vol_inputs = Vec::new();
+            for (j, idx) in indices.iter().enumerate() {
+                let vol = if j == 0 { system_volume } else { mic_volume };
+                if (vol - 1.0).abs() > 0.01 {
+                    let label = format!("av{ci}_{j}");
+                    filters.push(format!("[{}:a]volume={:.2}[{label}]", idx, vol));
+                    vol_inputs.push(format!("[{label}]"));
+                } else {
+                    vol_inputs.push(format!("[{}:a]", idx));
+                }
+            }
+            let mix_inputs: String = vol_inputs.join("");
             filters.push(format!(
                 "{mix_inputs}amix=inputs={}:duration=first[a{ci}]",
                 indices.len()
@@ -454,15 +504,20 @@ fn build_filter_complex_with_trim(
     let mut cumulative_offset: f64 = 0.0;
 
     for i in 0..(n - 1) {
-        let transition_type = transitions
-            .get(i)
+        let transition = transitions.get(i);
+        let transition_type = transition
             .map(|t| &t.transition_type)
             .unwrap_or(&TransitionType::Fade);
+
+        // Per-transition duration, clamped to 90% of the shorter adjacent clip
+        let raw_dur = transition.map(|t| t.duration_s).unwrap_or(DEFAULT_TRANSITION_DURATION);
+        let max_dur = eff_durations[i].min(eff_durations[i + 1]) * 0.9;
+        let trans_dur = raw_dur.clamp(0.1, max_dur.max(0.1));
 
         if *transition_type == TransitionType::Cut {
             cumulative_offset += eff_durations[i];
         } else {
-            cumulative_offset += eff_durations[i] - TRANSITION_DURATION;
+            cumulative_offset += eff_durations[i] - trans_dur;
         }
 
         let out_label = format!("[v{i}]");
@@ -474,7 +529,7 @@ fn build_filter_complex_with_trim(
             ));
         } else {
             filters.push(format!(
-                "{prev_label}{next_input}xfade=transition={}:duration={TRANSITION_DURATION}:offset={cumulative_offset:.3}{out_label}",
+                "{prev_label}{next_input}xfade=transition={}:duration={trans_dur:.3}:offset={cumulative_offset:.3}{out_label}",
                 xfade_name(transition_type),
             ));
         }
@@ -498,13 +553,15 @@ pub async fn export_mp4(
     subtitles: &[Subtitle],
     clip_annotations: &HashMap<String, Vec<Annotation>>,
     clip_cursor_positions: &HashMap<String, Vec<CursorPosition>>,
+    system_volume: f32,
+    mic_volume: f32,
 ) -> Result<()> {
     if clips.is_empty() {
-        anyhow::bail!("No clips to export");
+        anyhow::bail!("Aucun clip à exporter");
     }
     for (i, clip) in clips.iter().enumerate() {
         if !clip.path.exists() {
-            anyhow::bail!("Clip {} file not found: {:?}", i + 1, clip.path);
+            anyhow::bail!("Fichier du clip {} introuvable : {:?}", i + 1, clip.path);
         }
     }
 
@@ -512,6 +569,7 @@ pub async fn export_mp4(
         return export_single_clip(
             &clips[0], output_path, app, watermark, quality,
             clip_keystrokes, subtitles, clip_annotations, clip_cursor_positions,
+            system_volume, mic_volume,
         ).await;
     }
 
@@ -527,6 +585,7 @@ pub async fn export_mp4(
         return export_with_concat(
             clips, &eff_durations, output_path, app, watermark, quality,
             clip_keystrokes, subtitles, clip_annotations, clip_cursor_positions,
+            system_volume, mic_volume,
         ).await;
     }
 
@@ -582,7 +641,14 @@ pub async fn export_mp4(
             if transitions[i].transition_type == TransitionType::Cut {
                 cumulative_time += eff_durations[i];
             } else {
-                cumulative_time += eff_durations[i] - TRANSITION_DURATION;
+                let raw_dur = transitions[i].duration_s;
+                let max_dur = if i + 1 < eff_durations.len() {
+                    eff_durations[i].min(eff_durations[i + 1]) * 0.9
+                } else {
+                    eff_durations[i] * 0.9
+                };
+                let trans_dur = raw_dur.clamp(0.1, max_dur.max(0.1));
+                cumulative_time += eff_durations[i] - trans_dur;
             }
         } else {
             cumulative_time += eff_durations[i];
@@ -603,7 +669,7 @@ pub async fn export_mp4(
 
     // Audio filter
     let audio_output_label = if has_any_audio {
-        let af = build_audio_concat_filter(&audio_input_map, &eff_durations);
+        let af = build_audio_concat_filter(&audio_input_map, &eff_durations, system_volume, mic_volume);
         if !af.is_empty() {
             filter.push_str(&format!(";{}", af));
             Some("[aout]".to_string())
@@ -639,8 +705,21 @@ pub async fn export_mp4(
         .spawn()
         .context("Failed to start FFmpeg export")?;
 
-    let total_duration: f64 = eff_durations.iter().sum::<f64>()
-        - (transitions.iter().filter(|t| t.transition_type != TransitionType::Cut).count() as f64 * TRANSITION_DURATION);
+    let total_duration: f64 = {
+        let sum: f64 = eff_durations.iter().sum();
+        let trans_sum: f64 = transitions.iter().enumerate()
+            .filter(|(_, t)| t.transition_type != TransitionType::Cut)
+            .map(|(i, t)| {
+                let max_dur = if i + 1 < eff_durations.len() {
+                    eff_durations[i].min(eff_durations[i + 1]) * 0.9
+                } else {
+                    eff_durations[i] * 0.9
+                };
+                t.duration_s.clamp(0.1, max_dur.max(0.1))
+            })
+            .sum();
+        sum - trans_sum
+    };
 
     let mut stderr_log = String::new();
     if let Some(stderr) = child.stderr.take() {
@@ -660,7 +739,7 @@ pub async fn export_mp4(
     let status = child.wait().await.context("FFmpeg export failed")?;
     if !status.success() {
         eprintln!("[export] FFmpeg stderr:\n{}", stderr_log);
-        anyhow::bail!("FFmpeg exited with code {:?}. Stderr: {}", status.code(), stderr_log.chars().take(500).collect::<String>());
+        anyhow::bail!("{}", translate_ffmpeg_error(&stderr_log));
     }
 
     let _ = app.emit("export-progress", 100u32);
@@ -680,6 +759,8 @@ async fn export_with_concat(
     subtitles: &[Subtitle],
     clip_annotations: &HashMap<String, Vec<Annotation>>,
     clip_cursor_positions: &HashMap<String, Vec<CursorPosition>>,
+    system_volume: f32,
+    mic_volume: f32,
 ) -> Result<()> {
     let max_w = (clips.iter().map(|c| c.region.width).max().unwrap_or(1920) / 2) * 2;
     let max_h = (clips.iter().map(|c| c.region.height).max().unwrap_or(1080) / 2) * 2;
@@ -744,7 +825,7 @@ async fn export_with_concat(
 
     // Audio
     let audio_output = if has_any_audio {
-        let af = build_audio_concat_filter(&audio_input_map, eff_durations);
+        let af = build_audio_concat_filter(&audio_input_map, eff_durations, system_volume, mic_volume);
         if !af.is_empty() {
             filters.push(af);
             Some("[aout]".to_string())
@@ -781,7 +862,7 @@ async fn export_with_concat(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Concat export failed: {}", stderr.chars().take(500).collect::<String>());
+        anyhow::bail!("{}", translate_ffmpeg_error(&stderr));
     }
     let _ = app.emit("export-progress", 100u32);
     Ok(())
@@ -799,6 +880,8 @@ async fn export_single_clip(
     subtitles: &[Subtitle],
     clip_annotations: &HashMap<String, Vec<Annotation>>,
     clip_cursor_positions: &HashMap<String, Vec<CursorPosition>>,
+    system_volume: f32,
+    mic_volume: f32,
 ) -> Result<()> {
     let _ = app.emit("export-progress", 10u32);
 
@@ -859,7 +942,8 @@ async fn export_single_clip(
         vf_parts.push(WATERMARK_FILTER.to_string());
     }
 
-    let need_filter_complex = !vf_parts.is_empty() || audio_input_indices.len() > 1;
+    let has_volume_adj = (system_volume - 1.0).abs() > 0.01 || (mic_volume - 1.0).abs() > 0.01;
+    let need_filter_complex = !vf_parts.is_empty() || audio_input_indices.len() > 1 || (has_volume_adj && !audio_input_indices.is_empty());
 
     if need_filter_complex {
         let mut fc_parts = Vec::new();
@@ -872,8 +956,23 @@ async fn export_single_clip(
         fc_parts.push(video_chain);
 
         if audio_input_indices.len() > 1 {
-            let mix: String = audio_input_indices.iter().map(|i| format!("[{}:a]", i)).collect();
+            // Multiple audio sources — apply volume to each before mixing
+            let mut vol_inputs = Vec::new();
+            for (j, idx) in audio_input_indices.iter().enumerate() {
+                let vol = if j == 0 { system_volume } else { mic_volume };
+                if (vol - 1.0).abs() > 0.01 {
+                    let label = format!("av{j}");
+                    fc_parts.push(format!("[{}:a]volume={:.2}[{label}]", idx, vol));
+                    vol_inputs.push(format!("[{label}]"));
+                } else {
+                    vol_inputs.push(format!("[{}:a]", idx));
+                }
+            }
+            let mix: String = vol_inputs.join("");
             fc_parts.push(format!("{mix}amix=inputs={}:duration=first[aout]", audio_input_indices.len()));
+        } else if audio_input_indices.len() == 1 && has_volume_adj {
+            let vol = system_volume; // single source defaults to system volume
+            fc_parts.push(format!("[{}:a]volume={:.2}[aout]", audio_input_indices[0], vol));
         }
 
         cmd_args.push("-filter_complex".into());
@@ -881,7 +980,7 @@ async fn export_single_clip(
         cmd_args.push("-map".into());
         cmd_args.push("[vout]".into());
 
-        if audio_input_indices.len() > 1 {
+        if audio_input_indices.len() > 1 || (audio_input_indices.len() == 1 && has_volume_adj) {
             cmd_args.push("-map".into());
             cmd_args.push("[aout]".into());
         } else if audio_input_indices.len() == 1 {
@@ -914,7 +1013,7 @@ async fn export_single_clip(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("FFmpeg exited with code {:?}. Stderr: {}", output.status.code(), stderr.chars().take(500).collect::<String>());
+        anyhow::bail!("{}", translate_ffmpeg_error(&stderr));
     }
 
     let _ = app.emit("export-progress", 100u32);
@@ -934,13 +1033,15 @@ pub async fn export_gif(
     subtitles: &[Subtitle],
     clip_annotations: &HashMap<String, Vec<Annotation>>,
     clip_cursor_positions: &HashMap<String, Vec<CursorPosition>>,
+    system_volume: f32,
+    mic_volume: f32,
 ) -> Result<()> {
     if clips.is_empty() {
-        anyhow::bail!("No clips to export as GIF");
+        anyhow::bail!("Aucun clip à exporter en GIF");
     }
     for (i, clip) in clips.iter().enumerate() {
         if !clip.path.exists() {
-            anyhow::bail!("Clip {} file not found: {:?}", i + 1, clip.path);
+            anyhow::bail!("Fichier du clip {} introuvable : {:?}", i + 1, clip.path);
         }
     }
 
@@ -949,9 +1050,9 @@ pub async fn export_gif(
     let temp_quality = ExportQuality::Low;
 
     if clips.len() == 1 {
-        export_single_clip(&clips[0], &temp_mp4, app, watermark, &temp_quality, clip_keystrokes, subtitles, clip_annotations, clip_cursor_positions).await?;
+        export_single_clip(&clips[0], &temp_mp4, app, watermark, &temp_quality, clip_keystrokes, subtitles, clip_annotations, clip_cursor_positions, system_volume, mic_volume).await?;
     } else {
-        export_mp4(clips, transitions, &temp_mp4, app, watermark, &temp_quality, clip_keystrokes, subtitles, clip_annotations, clip_cursor_positions).await?;
+        export_mp4(clips, transitions, &temp_mp4, app, watermark, &temp_quality, clip_keystrokes, subtitles, clip_annotations, clip_cursor_positions, system_volume, mic_volume).await?;
     }
     let _ = app.emit("export-progress", 50u32);
 
@@ -969,7 +1070,7 @@ pub async fn export_gif(
         .output().await.context("Failed to generate GIF palette")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Palette generation failed: {}", stderr.chars().take(500).collect::<String>());
+        anyhow::bail!("Échec de la génération de palette : {}", translate_ffmpeg_error(&stderr));
     }
     let _ = app.emit("export-progress", 75u32);
 
@@ -985,7 +1086,7 @@ pub async fn export_gif(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("GIF generation failed: {}", stderr.chars().take(500).collect::<String>());
+        anyhow::bail!("Échec de la génération GIF : {}", translate_ffmpeg_error(&stderr));
     }
     let _ = app.emit("export-progress", 100u32);
     Ok(())
@@ -998,12 +1099,19 @@ pub async fn preview_mp4(
     transitions: &[Transition],
     output_path: &PathBuf,
     app: &AppHandle,
+    clip_keystrokes: &HashMap<String, Vec<KeystrokeEvent>>,
+    subtitles: &[Subtitle],
+    clip_annotations: &HashMap<String, Vec<Annotation>>,
+    clip_cursor_positions: &HashMap<String, Vec<CursorPosition>>,
 ) -> Result<()> {
     if clips.is_empty() {
-        anyhow::bail!("No clips to preview");
+        anyhow::bail!("Aucun clip à prévisualiser");
     }
     if clips.len() == 1 {
-        return preview_single_clip(&clips[0], output_path, app).await;
+        return preview_single_clip(
+            &clips[0], output_path, app,
+            clip_keystrokes, subtitles, clip_annotations, clip_cursor_positions,
+        ).await;
     }
 
     let mut durations = Vec::new();
@@ -1018,26 +1126,61 @@ pub async fn preview_mp4(
     let prev_w = ((max_w / 2) / 2 * 2).max(320);
     let prev_h = ((max_h / 2) / 2 * 2).max(240);
 
-    // Preview without annotations/cursor/keystrokes for speed
-    let empty_ann: HashMap<String, Vec<Annotation>> = HashMap::new();
-    let empty_cur: HashMap<String, Vec<CursorPosition>> = HashMap::new();
-
     let mut args: Vec<String> = Vec::new();
     for clip in clips {
         args.push("-i".into());
         args.push(clip.path.to_string_lossy().to_string());
     }
 
-    let filter = build_filter_complex_with_trim(
+    let mut filter = build_filter_complex_with_trim(
         clips, &eff_durations, transitions, prev_w, prev_h,
-        &empty_ann, &empty_cur,
+        clip_annotations, clip_cursor_positions,
     );
+
+    let video_final_label = if clips.len() == 2 {
+        "[v0]".to_string()
+    } else {
+        format!("[v{}]", clips.len() - 2)
+    };
+
+    // Global overlays: keystrokes, subtitles (same logic as export)
+    let mut overlay_filters = Vec::new();
+    let mut cumulative_time = 0.0;
+    for (i, clip) in clips.iter().enumerate() {
+        if let Some(events) = clip_keystrokes.get(&clip.id) {
+            overlay_filters.extend(build_keystroke_filters(events, cumulative_time, clip.trim_start_ms));
+        }
+        if i < transitions.len() {
+            if transitions[i].transition_type == TransitionType::Cut {
+                cumulative_time += eff_durations[i];
+            } else {
+                let raw_dur = transitions[i].duration_s;
+                let max_dur = if i + 1 < eff_durations.len() {
+                    eff_durations[i].min(eff_durations[i + 1]) * 0.9
+                } else {
+                    eff_durations[i] * 0.9
+                };
+                let trans_dur = raw_dur.clamp(0.1, max_dur.max(0.1));
+                cumulative_time += eff_durations[i] - trans_dur;
+            }
+        } else {
+            cumulative_time += eff_durations[i];
+        }
+    }
+    overlay_filters.extend(build_subtitle_filters(subtitles));
+
+    let output_label = if overlay_filters.is_empty() {
+        video_final_label.clone()
+    } else {
+        let out = "[vfinal]";
+        filter.push_str(&format!(";{}{}{}", video_final_label, overlay_filters.join(","), out));
+        out.to_string()
+    };
+
     args.push("-filter_complex".into());
     args.push(filter);
-
-    let final_label = if clips.len() == 2 { "[v0]".to_string() } else { format!("[v{}]", clips.len() - 2) };
     args.push("-map".into());
-    args.push(final_label);
+    args.push(output_label);
     args.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-pix_fmt", "yuv420p", "-r", "24", "-an", "-y"].iter().map(|s| s.to_string()));
     args.push(output_path.to_string_lossy().to_string());
 
@@ -1047,8 +1190,21 @@ pub async fn preview_mp4(
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())
         .spawn().context("Failed to start FFmpeg preview")?;
 
-    let total_duration: f64 = eff_durations.iter().sum::<f64>()
-        - (transitions.iter().filter(|t| t.transition_type != TransitionType::Cut).count() as f64 * TRANSITION_DURATION);
+    let total_duration: f64 = {
+        let sum: f64 = eff_durations.iter().sum();
+        let trans_sum: f64 = transitions.iter().enumerate()
+            .filter(|(_, t)| t.transition_type != TransitionType::Cut)
+            .map(|(i, t)| {
+                let max_dur = if i + 1 < eff_durations.len() {
+                    eff_durations[i].min(eff_durations[i + 1]) * 0.9
+                } else {
+                    eff_durations[i] * 0.9
+                };
+                t.duration_s.clamp(0.1, max_dur.max(0.1))
+            })
+            .sum();
+        sum - trans_sum
+    };
 
     let mut stderr_log = String::new();
     if let Some(stderr) = child.stderr.take() {
@@ -1066,13 +1222,21 @@ pub async fn preview_mp4(
 
     let status = child.wait().await.context("FFmpeg preview failed")?;
     if !status.success() {
-        anyhow::bail!("Preview failed: {}", stderr_log.chars().take(500).collect::<String>());
+        anyhow::bail!("Échec de la prévisualisation : {}", translate_ffmpeg_error(&stderr_log));
     }
     let _ = app.emit("preview-progress", 100u32);
     Ok(())
 }
 
-async fn preview_single_clip(clip: &Clip, output_path: &PathBuf, app: &AppHandle) -> Result<()> {
+async fn preview_single_clip(
+    clip: &Clip,
+    output_path: &PathBuf,
+    app: &AppHandle,
+    clip_keystrokes: &HashMap<String, Vec<KeystrokeEvent>>,
+    subtitles: &[Subtitle],
+    clip_annotations: &HashMap<String, Vec<Annotation>>,
+    clip_cursor_positions: &HashMap<String, Vec<CursorPosition>>,
+) -> Result<()> {
     let _ = app.emit("preview-progress", 10u32);
 
     let prev_w = ((clip.region.width / 2) / 2 * 2).max(320);
@@ -1090,17 +1254,41 @@ async fn preview_single_clip(clip: &Clip, output_path: &PathBuf, app: &AppHandle
         let end = clip.trim_end_ms as f64 / 1000.0 - clip.trim_start_ms as f64 / 1000.0;
         cmd_args.push(format!("{:.3}", end.max(0.1)));
     }
-    let scale = format!("scale={}:{}", prev_w, prev_h);
-    cmd_args.extend(["-vf", &scale, "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-pix_fmt", "yuv420p", "-r", "24", "-an", "-y"].iter().map(|s| s.to_string()));
+
+    // Build video filter chain with effects
+    let mut vf_parts: Vec<String> = vec![format!("scale={}:{}", prev_w, prev_h)];
+
+    // Cursor zoom
+    if let Some(positions) = clip_cursor_positions.get(&clip.id) {
+        if let Some(zoom) = build_cursor_zoom_filter(positions, clip.trim_start_ms, prev_w, prev_h) {
+            vf_parts.push(zoom);
+        }
+    }
+
+    // Annotations
+    if let Some(anns) = clip_annotations.get(&clip.id) {
+        vf_parts.extend(build_annotation_draw_filters(anns, prev_w, prev_h));
+    }
+
+    // Keystrokes
+    if let Some(events) = clip_keystrokes.get(&clip.id) {
+        vf_parts.extend(build_keystroke_filters(events, 0.0, clip.trim_start_ms));
+    }
+
+    // Subtitles
+    vf_parts.extend(build_subtitle_filters(subtitles));
+
+    let vf = vf_parts.join(",");
+    cmd_args.extend(["-vf", &vf, "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-pix_fmt", "yuv420p", "-r", "24", "-an", "-y"].iter().map(|s| s.to_string()));
     cmd_args.push(output_path.to_string_lossy().to_string());
 
     let output = crate::ffmpeg_command()
         .args(&cmd_args)
         .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())
-        .output().await.context("Failed to preview single clip")?;
+        .output().await.context("Échec de la prévisualisation")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Preview failed: {}", stderr.chars().take(500).collect::<String>());
+        anyhow::bail!("Échec de la prévisualisation : {}", translate_ffmpeg_error(&stderr));
     }
     let _ = app.emit("preview-progress", 100u32);
     Ok(())
@@ -1287,15 +1475,15 @@ mod tests {
 
     #[test]
     fn test_all_cuts_true() {
-        let t = vec![Transition { transition_type: TransitionType::Cut }];
+        let t = vec![Transition { transition_type: TransitionType::Cut, duration_s: 0.5 }];
         assert!(all_cuts(&t));
     }
 
     #[test]
     fn test_all_cuts_false() {
         let t = vec![
-            Transition { transition_type: TransitionType::Cut },
-            Transition { transition_type: TransitionType::Fade },
+            Transition { transition_type: TransitionType::Cut, duration_s: 0.5 },
+            Transition { transition_type: TransitionType::Fade, duration_s: 0.5 },
         ];
         assert!(!all_cuts(&t));
     }

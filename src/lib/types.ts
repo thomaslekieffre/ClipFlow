@@ -41,6 +41,7 @@ export type TransitionType =
 
 export interface Transition {
   transition_type: TransitionType;
+  duration_s: number;
 }
 
 export type RecordingState = "idle" | "recording" | "paused";

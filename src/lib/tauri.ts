@@ -54,8 +54,9 @@ export async function deleteClip(clipId: string): Promise<void> {
 export async function setTransition(
   index: number,
   transitionType: TransitionType,
+  durationS?: number,
 ): Promise<void> {
-  return invoke("set_transition", { index, transitionType });
+  return invoke("set_transition", { index, transitionType, durationS });
 }
 
 export async function setAllTransitions(transitionType: TransitionType): Promise<void> {
@@ -192,4 +193,12 @@ export async function setSelectedMic(deviceName: string | null): Promise<void> {
 
 export async function getSelectedMic(): Promise<string | null> {
   return invoke("get_selected_mic");
+}
+
+export async function setAudioVolumes(systemVolume: number, micVolume: number): Promise<void> {
+  return invoke("set_audio_volumes", { systemVolume, micVolume });
+}
+
+export async function getAudioVolumes(): Promise<[number, number]> {
+  return invoke("get_audio_volumes");
 }

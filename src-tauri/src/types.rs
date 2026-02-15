@@ -50,15 +50,22 @@ pub enum TransitionType {
     Cut,
 }
 
+fn default_transition_duration() -> f64 {
+    0.5
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transition {
     pub transition_type: TransitionType,
+    #[serde(default = "default_transition_duration")]
+    pub duration_s: f64,
 }
 
 impl Default for Transition {
     fn default() -> Self {
         Self {
             transition_type: TransitionType::Fade,
+            duration_s: 0.5,
         }
     }
 }
@@ -247,6 +254,7 @@ mod tests {
     fn test_transition_default() {
         let t = Transition::default();
         assert_eq!(t.transition_type, TransitionType::Fade);
+        assert!((t.duration_s - 0.5).abs() < 0.001);
     }
 
     #[test]
